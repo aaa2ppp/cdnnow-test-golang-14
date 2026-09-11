@@ -1,3 +1,5 @@
+use std::hint::black_box;
+
 #[no_mangle]
 pub extern "C" fn sub(a: i64, b: i64) -> i64 {
     let mut x = (a - b) as u64;
@@ -7,6 +9,8 @@ pub extern "C" fn sub(a: i64, b: i64) -> i64 {
         x ^= x >> 17;
         x ^= x << 5;
     }
+
+    black_box(x);
 
     a - b
 }
