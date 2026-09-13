@@ -1,6 +1,21 @@
-package calc
+package operators
 
-import "testing"
+import (
+	"log"
+	"testing"
+)
+
+const (
+	cLibPath    = "../../bin/libcalculator.so"
+	rustLibPath = "../../bin/libcalculator_rust.so"
+)
+
+func init() {
+	err := LoadLibraries(cLibPath, rustLibPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
 
 func BenchmarkAdd(b *testing.B) {
 	for i := 0; i < b.N; i++ {

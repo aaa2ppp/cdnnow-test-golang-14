@@ -1,5 +1,5 @@
 BIN_DIR = ./bin
-LIB_DIR = ./lib
+LIB_DIR = $(BIN_DIR)
 TMP_DIR = ./tmp
 
 # source and dest for merge, patch, etc...
@@ -52,21 +52,24 @@ test: ## run tests
 
 .PHONY: build-libs
 build-libs: ## build C & Rust test libs
-	sh build.sh
-
-check-libs:
-	@if ! [ -f $(LIB_DIR)/libcalculator.so -o -f $(LIB_DIR)/libcalculator_rust.so ]; then \
-		echo "make build-libs first" >&2; \
-		exit 1; \
-	fi
+	gcc -shared -fPIC -O2 -o $(LIB_DIR)/libcalculator.so c_lib/calculator.c
+	cd rust_lib && cargo build --release
+	cp -f rust_lib/target/release/libcalculator_rust.so $(LIB_DIR)
 
 .PHONY: build-server
-build-server: check-libs ## build server
+build-server: ## build server
 	CGO_ENABLED=1 go build -o $(BIN_DIR)/server ./cmd/server
+
+.PHONY: build-generator
+build-generator: ## build generator
+	CGO_ENABLED=0 go build -o $(BIN_DIR)/generator ./cmd/generator
+
+.PHONY: build
+build: build-server build-generator build-libs
 
 .PHONY: clean
 clean: ## remove bin and temp files
-	-rm -fr $(BIN_DIR) $(LIB_DIR) $(TMP_DIR)
+	-rm -fr *.so $(BIN_DIR) $(LIB_DIR) $(TMP_DIR)
 
 
 .PHONY: FORCE merge patch help 
@@ -75,7 +78,7 @@ FORCE:
 
 merge: ## merge code to file for AI review
 	@mkdir -p $(TMP_DIR)
-	find $(SRC) \
+	@find $(SRC) \
 		! -path 'tmp/*' \
 		! -path 'bak/*' \
 		! -path 'target/*' \

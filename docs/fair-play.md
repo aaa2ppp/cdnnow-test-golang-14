@@ -26,3 +26,14 @@ BenchmarkAdd-4                     76219             15674 ns/op               0
 BenchmarkSub-4                     75309             15660 ns/op               0 B/op          0 allocs/op
 BenchmarkGoControlShot-4           75480             15500 ns/op               0 B/op          0 allocs/op
 ```
+
+Обратите внимание: На свежих CPU разница может быть более заметна, но порядок цифр сохраняется.
+```
+goos: linux
+goarch: amd64
+pkg: aaa2ppp/cdnnow-test-golang-14/internal/calc
+cpu: AMD Ryzen AI 7 350 w/ Radeon 860M              
+BenchmarkAdd-16                    70101             15941 ns/op               0 B/op          0 allocs/op
+BenchmarkSub-16                    99163             12002 ns/op               0 B/op          0 allocs/op
+BenchmarkGoControlShot-16          94082             11947 ns/op               0 B/op          0 allocs/op
+```

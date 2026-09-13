@@ -2,20 +2,16 @@
 
 set -euo pipefail
 
-mkdir -p lib
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 echo "== Building C library =="
-gcc -shared -fPIC -O2 -o lib/libcalculator.so c_lib/calculator.c
-echo "  -> lib/libcalculator.so"
+gcc -shared -fPIC -O2 -o libcalculator.so c_lib/calculator.c
+echo "  -> libcalculator.so"
 
 echo "== Building Rust library =="
-(cd rust_lib && cbindgen --lang c --output calculator_rust.h)
-echo "  -> rust_lib/libcalculator_rust.h"
 (cd rust_lib && cargo build --release)
-cp -f rust_lib/target/release/libcalculator_rust.so lib/
-echo "  -> lib/libcalculator_rust.so"
+cp rust_lib/target/release/libcalculator_rust.so .
+echo "  -> libcalculator_rust.so"
 
 echo "Build complete."

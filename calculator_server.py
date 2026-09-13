@@ -88,12 +88,12 @@ def main():
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
         "--c-lib",
-        default=os.path.join(SCRIPT_DIR, "lib/libcalculator.so"),
+        default=os.path.join(SCRIPT_DIR, "libcalculator.so"),
         help="path to the compiled C shared library",
     )
     parser.add_argument(
         "--rust-lib",
-        default=os.path.join(SCRIPT_DIR, "lib/libcalculator_rust.so"),
+        default=os.path.join(SCRIPT_DIR, "libcalculator_rust.so"),
         help="path to the compiled Rust shared library",
     )
     parser.add_argument(
