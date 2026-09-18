@@ -37,3 +37,10 @@ BenchmarkAdd-16                    70101             15941 ns/op               0
 BenchmarkSub-16                    99163             12002 ns/op               0 B/op          0 allocs/op
 BenchmarkGoControlShot-16          94082             11947 ns/op               0 B/op          0 allocs/op
 ```
+
+---
+
+**PS**  
+Для C `volatile` в последствии был восстановлен "для наглядности", black_box для Rust оставлен (оригинальный файл лежит рядом).
+
+Но это не все! У этой истории было увлекательное [продолжение](./ryzen-volatile-mystery.md).
