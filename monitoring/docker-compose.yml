@@ -1,0 +1,66 @@
+services:
+  server:
+    build:
+      context: .. # Собираем из корня проекта
+      dockerfile: Dockerfile
+    container_name: calculator-server
+    command:
+      - -host=0.0.0.0
+      - -port=8080
+      - -calc-mode=parallel
+      - -queue-size=1024
+      - -pprof-addr=0.0.0.0:6060
+    ports:
+      - "6060:6060"
+      - "8080:8080"
+    networks:
+      - monitoring_net
+    healthcheck:
+      test: ["CMD", "/app/bin/healthcheck"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
+
+  prometheus:
+    image: prom/prometheus:v3.13.3-distroless
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=1h'
+    networks:
+      - monitoring_net
+    depends_on:
+      server:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:13.2.2-distroless-slim
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring_net
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  monitoring_net:
+    driver: bridge

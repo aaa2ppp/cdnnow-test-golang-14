@@ -11,16 +11,24 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/HdrHistogram/hdrhistogram-go"
 )
+
+const startJitter = 10 * time.Millisecond
+const histMinValue = 10 * time.Microsecond
+const histMaxValue = 100 * time.Millisecond
 
 func usage(msg string) {
 	out := flag.CommandLine.Output()
 	_, _ = fmt.Fprintf(out, "%s\nUsage %s:\n", msg, os.Args[0])
+	flag.PrintDefaults()
 	os.Exit(1)
 }
 
@@ -36,6 +44,7 @@ func main() {
 		intervalSec float64
 		timeoutSec  float64
 		noKeepAlive bool
+		percentiles bool
 	)
 	flag.StringVar(&url, "url", "http://localhost:8080/calc", "calculator endpoint")
 	flag.IntVar(&threads, "n", 10, "alias for threads")
@@ -43,6 +52,7 @@ func main() {
 	flag.Float64Var(&intervalSec, "interval", 0.1, "pause between requests per thread, in seconds (0 = as fast as possible)")
 	flag.Float64Var(&timeoutSec, "timeout", 5.0, "HTTP request timeout, seconds")
 	flag.BoolVar(&noKeepAlive, "no-keep-alive", false, "new connection will be created for each request")
+	flag.BoolVar(&percentiles, "percentiles", false, "calculate percentiles")
 	flag.Parse()
 
 	if threads <= 0 {
@@ -58,8 +68,6 @@ func main() {
 	if timeout <= 0 {
 		usage("timeout must be positive")
 	}
-
-	stats := &Statistics{}
 
 	client := &Client{
 		HTTPClient: &http.Client{
@@ -79,12 +87,19 @@ func main() {
 	workCtx, stop := signal.NotifyContext(abortCtx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	stats := &Statistics{}
+	hists := make([]*hdrhistogram.Histogram, threads)
+
 	var wg sync.WaitGroup
 	wg.Add(threads)
 
 	for i := range threads {
-		go func(id int) {
+		if percentiles {
+			hists[i] = hdrhistogram.New(int64(histMinValue), int64(histMaxValue), 3)
+		}
+		go func(id int, hist *hdrhistogram.Histogram) {
 			defer wg.Done()
+			time.Sleep(time.Duration(rand.Int64N(int64(startJitter))))
 			w := Worker{
 				ID:       id,
 				Interval: interval,
@@ -92,9 +107,18 @@ func main() {
 			}
 			w.Run(workCtx, func() error {
 				num := rand.IntN(201) - 100
-				return client.DoRequest(abortCtx, num)
+				start := time.Now()
+				if err := client.DoRequest(abortCtx, num); err != nil {
+					return err
+				}
+				if hist != nil {
+					if err := hist.RecordValue(int64(time.Since(start))); err != nil {
+						log.Printf("hist.RecordValue: %v", err)
+					}
+				}
+				return nil
 			})
-		}(i + 1)
+		}(i+1, hists[i])
 	}
 
 	log.Printf("Generator started: %d threads -> %s", threads, url)
@@ -107,6 +131,18 @@ func main() {
 
 	wg.Wait()
 	log.Printf("Total requests: ok=%d errors=%d", stats.Ok.Load(), stats.Errors.Load())
+
+	if percentiles {
+		hist := hists[0]
+		var dropped int64
+		for _, from := range hists[1:] {
+			dropped += hist.Merge(from)
+		}
+		if dropped > 0 {
+			log.Printf("hist.Merge: total dropped %d values", dropped)
+		}
+		_, _ = hist.PercentilesPrint(os.Stderr, 1, float64(time.Microsecond))
+	}
 }
 
 type Client struct {
@@ -119,7 +155,7 @@ func (c *Client) DoRequest(ctx context.Context, num int) error {
 	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
 
-	url := fmt.Sprintf("%s?num=%d", c.BaseURL, num)
+	url := c.BaseURL + "?num=" + strconv.Itoa(num)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {

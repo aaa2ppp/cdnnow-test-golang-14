@@ -1,7 +1,8 @@
-package api_test
+package api
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -9,8 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"aaa2ppp/cdnnow-test-golang-14/internal/api"
-	"aaa2ppp/cdnnow-test-golang-14/internal/calculator"
+	"aaa2ppp/cdnnow-test-golang-14/internal/calculators"
 	"aaa2ppp/cdnnow-test-golang-14/internal/operators"
 
 	"github.com/aaa2ppp/be"
@@ -29,23 +29,38 @@ func init() {
 }
 
 type mockService struct {
-	calls       int
-	processFunc func(int64)
+	calls int
+	count int
+
+	calculateFunc    func(int64) error
+	printMetricsFunc func(io.Writer) error
 }
 
-func (s *mockService) Process(num int64) {
+func (s *mockService) Calculate(num int64) error {
 	s.calls++
-	if s.processFunc != nil {
-		s.processFunc(num)
+	if s.calculateFunc != nil {
+		return s.calculateFunc(num)
 	}
+	return nil
 }
 
-func TestCalc(t *testing.T) {
+func (s *mockService) PrintMetrics(w io.Writer) error {
+	s.calls++
+	if s.printMetricsFunc != nil {
+		return s.printMetricsFunc(w)
+	}
+	return nil
+}
 
+func (s *mockService) CountRequests() {
+	s.count++
+}
+
+func TestAPI(t *testing.T) {
 	tests := []struct {
 		name       string
 		request    string
-		svc        mockService
+		newService func() *mockService
 		wantStatus int
 		wantCalls  int
 	}{
@@ -75,12 +90,40 @@ func TestCalc(t *testing.T) {
 			request:    "POST /calc?num=abc",
 			wantStatus: 400,
 		},
+		{
+			name:    "overloaded",
+			request: "POST /calc?num=42",
+			newService: func() *mockService {
+				return &mockService{
+					calculateFunc: func(int64) error { return calculators.ErrOverloaded },
+				}
+			},
+			wantStatus: 503,
+			wantCalls:  1,
+		},
+		{
+			name:    "unknown error",
+			request: "POST /calc?num=42",
+			newService: func() *mockService {
+				return &mockService{
+					calculateFunc: func(int64) error { return errors.New("unknown error") },
+				}
+			},
+			wantStatus: 500,
+			wantCalls:  1,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := tt.svc
-			router := api.New(&svc)
+			var svc *mockService
+			if tt.newService == nil {
+				svc = &mockService{}
+			} else {
+				svc = tt.newService()
+			}
+
+			router := New(svc)
 			server := httptest.NewServer(router)
 
 			method, url, _ := strings.Cut(tt.request, " ")
@@ -104,38 +147,75 @@ func TestCalc(t *testing.T) {
 	}
 }
 
-type stubService struct{}
+type mockCalcService struct {
+	Calculator
+}
 
-func (stubService) Process(num int64) {}
+func (c *mockCalcService) Calculate(num int64) error {
+	if c.Calculator != nil {
+		return c.Calculator.Calculate(num)
+	}
+	return nil
+}
 
-func BenchmarkCalc(b *testing.B) {
-	type startSvcFunc func() (api.Service, func())
+func (c *mockCalcService) CountRequests() {}
+
+func BenchmarkAPI(b *testing.B) {
+	type service interface {
+		Calculator
+		RequestsCounter
+	}
 
 	cases := []struct {
-		name     string
-		startSvc startSvcFunc
+		name    string
+		newCalc func() service
 	}{
 		{
-			"stub",
-			func() (api.Service, func()) { return stubService{}, func() {} },
+			"stub calc",
+			func() service {
+				return &mockCalcService{}
+			},
 		},
 		{
-			"mutext calculator",
-			func() (api.Service, func()) { return &calculator.MutextCalculator{}, func() {} },
+			"sync calc",
+			func() service {
+				return &mockCalcService{
+					Calculator: &calculators.SyncCalculator{},
+				}
+			},
 		},
 		{
-			"channel calculator",
-			func() (api.Service, func()) { return calculator.NewChannelCalculator() },
+			"async calc",
+			func() service {
+				c := calculators.NewAsyncCalculator(1024, nil, nil)
+				c.IgnoreOverload()
+				return &mockCalcService{
+					Calculator: c,
+				}
+			},
+		},
+		{
+			"parallel calc",
+			func() service {
+				c := calculators.NewParallelCalculator(1024, nil, nil)
+				c.IgnoreOverload()
+				return &mockCalcService{
+					Calculator: c,
+				}
+			},
 		},
 	}
 
+	type stopper interface{ Stop() }
+
 	for _, cs := range cases {
 		b.Run(cs.name, func(b *testing.B) {
-			svc, cancel := cs.startSvc()
-			defer cancel()
+			calc := cs.newCalc()
+			if calc, ok := calc.(stopper); ok {
+				defer calc.Stop()
+			}
 
-			router := api.New(svc)
-			server := httptest.NewServer(router)
+			server := httptest.NewServer(calcHandler(calc))
 
 			templ, _ := http.NewRequest("POST", server.URL+"/calc?num=42", nil)
 			ctx := context.Background()
@@ -153,34 +233,62 @@ func BenchmarkCalc(b *testing.B) {
 	}
 }
 
-func BenchmarkCalcParallel(b *testing.B) {
-	type startSvcFunc func() (api.Service, func())
+func BenchmarkAPIParallel(b *testing.B) {
+	type service interface {
+		Calculator
+		RequestsCounter
+	}
 
 	cases := []struct {
-		name     string
-		startSvc startSvcFunc
+		name    string
+		newCalc func() service
 	}{
 		{
-			"stub",
-			func() (api.Service, func()) { return stubService{}, func() {} },
+			"stub calc",
+			func() service {
+				return &mockCalcService{}
+			},
 		},
 		{
-			"mutext calculator",
-			func() (api.Service, func()) { return &calculator.MutextCalculator{}, func() {} },
+			"sync calc",
+			func() service {
+				return &mockCalcService{
+					Calculator: &calculators.SyncCalculator{},
+				}
+			},
 		},
 		{
-			"channel calculator",
-			func() (api.Service, func()) { return calculator.NewChannelCalculator() },
+			"async calc",
+			func() service {
+				c := calculators.NewAsyncCalculator(1024, nil, nil)
+				c.IgnoreOverload()
+				return &mockCalcService{
+					Calculator: c,
+				}
+			},
+		},
+		{
+			"parallel calc",
+			func() service {
+				c := calculators.NewParallelCalculator(1024, nil, nil)
+				c.IgnoreOverload()
+				return &mockCalcService{
+					Calculator: c,
+				}
+			},
 		},
 	}
 
+	type stopper interface{ Stop() }
+
 	for _, cs := range cases {
 		b.Run(cs.name, func(b *testing.B) {
-			svc, cancel := cs.startSvc()
-			defer cancel()
+			calc := cs.newCalc()
+			if calc, ok := calc.(stopper); ok {
+				defer calc.Stop()
+			}
 
-			router := api.New(svc)
-			server := httptest.NewServer(router)
+			server := httptest.NewServer(calcHandler(calc))
 
 			templReq, _ := http.NewRequest("POST", server.URL+"/calc?num=42", nil)
 			ctx := context.Background()

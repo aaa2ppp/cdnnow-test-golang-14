@@ -10,6 +10,7 @@
 *.out
 *.so
 *.a
+*.lock
 bin/
 lib/
 tmp/

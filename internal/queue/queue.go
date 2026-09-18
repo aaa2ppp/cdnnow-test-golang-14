@@ -1,95 +1,5 @@
 package queue
 
-// Stack реализация стека на слайсе.
-type Stack[T any] struct {
-	buf []T
-}
-
-func (s *Stack[T]) Len() int {
-	return len(s.buf)
-}
-
-func (s *Stack[T]) Empty() bool {
-	return len(s.buf) == 0
-}
-
-func (s *Stack[T]) Push(v T) {
-	s.buf = append(s.buf, v)
-}
-
-func (s *Stack[T]) Top() T {
-	if s.Empty() {
-		panic("stack is empty")
-	}
-	n := len(s.buf)
-	return (s.buf)[n-1]
-}
-
-func (s *Stack[T]) Pop() T {
-	if s.Empty() {
-		panic("stack is empty")
-	}
-	old := s.buf
-	n := len(old)
-	v := old[n-1]
-	var zero T
-	old[n-1] = zero
-	s.buf = old[:n-1]
-	return v
-}
-
-func (s *Stack[T]) Reset() {
-	clear(s.buf)
-	s.buf = s.buf[:0]
-}
-
-// Queue реализация очереди на двух стеках.
-type Queue[T any] struct {
-	input  Stack[T]
-	output Stack[T]
-}
-
-func (q *Queue[T]) Empty() bool {
-	return q.input.Empty() && q.output.Empty()
-}
-
-func (q *Queue[T]) Len() int {
-	return q.input.Len() + q.output.Len()
-}
-
-func (q *Queue[T]) Push(v T) {
-	q.input.Push(v)
-}
-
-func (q *Queue[T]) Front() T {
-	if q.Empty() {
-		panic("queue is empty")
-	}
-	q.pour()
-	return q.output.Top()
-}
-
-func (q *Queue[T]) Pop() T {
-	if q.Empty() {
-		panic("queue is empty")
-	}
-	q.pour()
-	return q.output.Pop()
-}
-
-func (q *Queue[T]) pour() {
-	if q.output.Empty() {
-		for !q.input.Empty() {
-			q.output.Push(q.input.Pop())
-		}
-	}
-}
-
-func (q *Queue[T]) Reset() {
-	q.input.Reset()
-	q.output.Reset()
-}
-
 // Deque реализация дека на кольцевом буфере.
 type Deque[T any] struct {
 	buf   []T
@@ -179,6 +89,36 @@ func (d *Deque[T]) At(idx int) T {
 	return d.buf[pos]
 }
 
+func (d *Deque[T]) Set(idx int, val T) {
+	if idx < 0 || idx >= d.size {
+		panic("deque: index out of range")
+	}
+	pos := d.front + idx
+	if pos >= len(d.buf) {
+		pos -= len(d.buf)
+	}
+	d.buf[pos] = val
+}
+
+// ToSlice возвращает снапшот очереди (копия)
+func (d *Deque[T]) ToSlice() []T {
+	if d.size == 0 {
+		return nil
+	}
+	back := d.front + d.size
+	if back >= len(d.buf) {
+		back -= len(d.buf)
+	}
+	slice := make([]T, d.size)
+	if d.front < back {
+		copy(slice, d.buf[d.front:back])
+	} else {
+		n := copy(slice, d.buf[d.front:])
+		copy(slice[n:], d.buf[:back])
+	}
+	return slice
+}
+
 func (d *Deque[T]) Reset() {
 	if d.size == 0 {
 		return
@@ -223,16 +163,6 @@ func (d *Deque[T]) grow(need int) {
 
 	d.buf = newBuf
 	d.front = 0
-}
-
-// NewStackFrom создаёт стек из существующего слайса, забирая его владение.
-func NewStackFrom[T any](slice []T) *Stack[T] {
-	return &Stack[T]{buf: slice}
-}
-
-// NewQueueFrom создаёт очередь из существующего слайса, забирая его владение.
-func NewQueueFrom[T any](slice []T) *Queue[T] {
-	return &Queue[T]{input: Stack[T]{buf: slice}}
 }
 
 // NewDequeFrom создаёт дек из существующего слайса, забирая его владение.

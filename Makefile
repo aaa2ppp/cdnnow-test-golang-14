@@ -36,11 +36,12 @@ E_COM  := $(if $(COLOR),\033[38;2;106;153;85m)
 .PHONY: all
 all: help
 
+.PHONY: deps generate lint test
+
 deps: ## update deps
 	go mod tidy
-	if test -d tests; then cd tests && go mod tidy; fi 
 
-generate:
+generate: ## run go generate
 	go generate ./...
 
 lint: ## run linters
@@ -52,6 +53,7 @@ test: ## run tests
 
 .PHONY: build-libs
 build-libs: ## build C & Rust test libs
+	@mkdir -p $(LIB_DIR)
 	gcc -shared -fPIC -O2 -o $(LIB_DIR)/libcalculator.so c_lib/calculator.c
 	cd rust_lib && cargo build --release
 	cp -f rust_lib/target/release/libcalculator_rust.so $(LIB_DIR)
@@ -64,8 +66,12 @@ build-server: ## build server
 build-generator: ## build generator
 	CGO_ENABLED=0 go build -o $(BIN_DIR)/generator ./cmd/generator
 
-.PHONY: build
-build: build-server build-generator build-libs
+.PHONY: build ## build all
+build: build-libs build-server build-generator
+
+.PHONY: bench
+bench: ## run benchmarks
+	CGO_ENABLED=1 go test -bench . -benchmem ./...
 
 .PHONY: clean
 clean: ## remove bin and temp files
@@ -79,24 +85,31 @@ FORCE:
 merge: ## merge code to file for AI review
 	@mkdir -p $(TMP_DIR)
 	@find $(SRC) \
-		! -path 'tmp/*' \
-		! -path 'bak/*' \
-		! -path 'target/*' \
+		-type d \( \
+			-name 'tmp' \
+			-o -name 'bak' \
+			-o -name 'bak[0-9]' \
+			-o -name 'bin' \
+			-o -name 'target' \
+		\) -prune \
+		-o \
 		-type f \
 		\( \
 			-name '*.go' \
 			-o -name 'go.mod' \
 			-o -name '*.py' \
 			-o -name '*.h'  \
+			-o -name '*.c'  \
 			-o -name '*.rs' \
 			-o -name '*.toml' \
 			-o -name '*.sh' \
 			-o -name '*.md' \
 			-o -name '*.y*ml' \
+			-o -name '*.json' \
 			-o -name 'Makefile*' \
 			-o -name 'Dockerfile*' \
 		\) \
-		-exec sh -c 'printf "\n=== {} ===\n\n"; cat {}' ';' \
+		-exec sh -c 'printf "\n=== {} ===\n\n"; cat "{}"' ';' \
 		> $(TMP_DIR)/$(DST).code
 
 
@@ -123,7 +136,6 @@ patch: deps generate lint test build ## make precommit patch
 	@printf "Patch saved to $(TMP_DIR)/$(DST).patch\n"
 
 
-.PHONY: help
 help: ## show this help
 	@printf "Usage: make [target] [VAR=value]\n\n"
 	@printf "Variables:\n"
