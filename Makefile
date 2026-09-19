@@ -5,6 +5,7 @@ TMP_DIR = ./tmp
 # source and dest for merge, patch, etc...
 SRC   ?= .
 DST   ?= 1
+MERGE_CODE = sh scripts/merge-code.sh
 
 # tip: to disable all linters can set LINTER=true
 LINTER ?= golangci-lint
@@ -84,33 +85,7 @@ FORCE:
 
 merge: ## merge code to file for AI review
 	@mkdir -p $(TMP_DIR)
-	@find $(SRC) \
-		-type d \( \
-			-name 'tmp' \
-			-o -name 'bak' \
-			-o -name 'bak[0-9]' \
-			-o -name 'bin' \
-			-o -name 'target' \
-		\) -prune \
-		-o \
-		-type f \
-		\( \
-			-name '*.go' \
-			-o -name 'go.mod' \
-			-o -name '*.py' \
-			-o -name '*.h'  \
-			-o -name '*.c'  \
-			-o -name '*.rs' \
-			-o -name '*.toml' \
-			-o -name '*.sh' \
-			-o -name '*.md' \
-			-o -name '*.y*ml' \
-			-o -name '*.json' \
-			-o -name 'Makefile*' \
-			-o -name 'Dockerfile*' \
-		\) \
-		-exec sh -c 'printf "\n=== {} ===\n\n"; cat "{}"' ';' \
-		> $(TMP_DIR)/$(DST).code
+	@$(MERGE_CODE) $(SRC) > "$(TMP_DIR)/$(DST).code"
 
 
 .NOTPARALLEL: patch
