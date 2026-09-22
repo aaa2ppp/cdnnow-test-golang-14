@@ -2,7 +2,6 @@ package calculators
 
 import (
 	"errors"
-	"sync"
 	"time"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
@@ -30,11 +29,11 @@ type Calculator interface {
 }
 
 // SyncCalculator простой синхронный калькулятор. Клиент ждет завершения вычислений.
-// Cинхронизация с помощью Mutex.
 type SyncCalculator struct {
 	record func(metrics.Sample)
-	mu     sync.Mutex
-	vals   Values
+	lock   chan struct{} // FIFO-мьютекс, cap=1
+
+	vals Values
 }
 
 var _ Calculator = &SyncCalculator{}
@@ -42,6 +41,7 @@ var _ Calculator = &SyncCalculator{}
 func NewSyncCalculator(record func(metrics.Sample)) *SyncCalculator {
 	return &SyncCalculator{
 		record: record,
+		lock:   make(chan struct{}, 1),
 	}
 }
 
@@ -65,9 +65,9 @@ func (c *SyncCalculator) calculate(num int64) metrics.Sample {
 }
 
 func (c *SyncCalculator) Calculate(num int64) error {
-	c.mu.Lock()
+	c.lock <- struct{}{}
 	sample := c.calculate(num)
-	c.mu.Unlock()
+	<-c.lock
 
 	if c.record != nil {
 		c.record(sample)
@@ -77,9 +77,10 @@ func (c *SyncCalculator) Calculate(num int64) error {
 }
 
 func (c *SyncCalculator) Values() Values {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.vals
+	c.lock <- struct{}{}
+	vals := c.vals
+	<-c.lock
+	return vals
 }
 
 // AsyncCalculator выполняет вычисления в отдельной горутине. Вычисления производятся в фоне.
@@ -220,9 +221,12 @@ func (c *AsyncCalculator) Calculate(num int64) error {
 	}
 }
 
-// Values возвращает текущие Sum и Sub. Возвращает {0, 0} после Stop.
+// Values возвращает текущие Sum и Sub. После Stop возвращает финальные значения.
 func (c *AsyncCalculator) Values() Values {
-	return <-c.getValCh
+	if vals, ok := <-c.getValCh; ok {
+		return vals
+	}
+	return c.vals
 }
 
 // Stop останавливает калькулятор. Паникует при повторном вызове.
@@ -359,9 +363,12 @@ func (c *asyncSingleCalculator) Calculate(num int64) error {
 	}
 }
 
-// Values возвращает текущее значение. Возвращает 0 после Stop.
+// Value возвращает текущее значение. После Stop возвращает финальное значение.
 func (c *asyncSingleCalculator) Value() int64 {
-	return <-c.getValCh
+	if val, ok := <-c.getValCh; ok {
+		return val
+	}
+	return c.val
 }
 
 // Stop останавливает калькулятор. Паникует при повторном вызове.

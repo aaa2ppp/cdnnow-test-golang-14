@@ -70,7 +70,7 @@
                         "name": "${DS}"
                       },
                       "spec": {
-                        "expr": "avg(calc_rps_1s{second!=\"0\"})",
+                        "expr": "avg(calc_ok_1s{second!=\"0\"})",
                         "legendFormat": "avg"
                       }
                     },
@@ -156,7 +156,7 @@
                         "name": "${DS}"
                       },
                       "spec": {
-                        "expr": "max(calc_rps_1s{second!=\"0\"})",
+                        "expr": "max(calc_ok_1s{second!=\"0\"})",
                         "legendFormat": "max"
                       }
                     },
@@ -175,7 +175,7 @@
                         "name": "${DS}"
                       },
                       "spec": {
-                        "expr": "min(calc_rps_1s{second!=\"0\"})",
+                        "expr": "min(calc_ok_1s{second!=\"0\"})",
                         "legendFormat": "min"
                       }
                     },
@@ -319,7 +319,7 @@
                         "name": "${DS}"
                       },
                       "spec": {
-                        "expr": "calc_rps_1s{second!=\"0\"}",
+                        "expr": "calc_ok_1s{second!=\"0\"}",
                         "format": "table",
                         "instant": true
                       }

@@ -22,6 +22,8 @@ import (
 	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
 	"aaa2ppp/cdnnow-test-golang-14/internal/operators"
 	"aaa2ppp/cdnnow-test-golang-14/internal/pools"
+
+	"golang.org/x/net/netutil"
 )
 
 func usage(msg string) {
@@ -57,6 +59,7 @@ func main() {
 		calcMode    CalcMode
 		queueSize   int
 		pprofAddr   string
+		maxConns    int
 	)
 	flag.StringVar(&host, "host", "0.0.0.0", "bind server to address")
 	flag.StringVar(&port, "port", "8080", "server port")
@@ -64,8 +67,9 @@ func main() {
 	flag.StringVar(&rustLibPath, "rust-lib", filepath.Join(libDir, "libcalculator_rust.so"), "path to rust-lib")
 	flag.Float64Var(&intervalSec, "interval", 5.0, "seconds between periodic sum/sub reports")
 	flag.TextVar(&calcMode, "calc-mode", Async, "calculation execution mode, can be: sync, async, parallel")
-	flag.IntVar(&queueSize, "queue-size", calculatorQueueSize, "Maximum task queue capacity. Returns 503 if the queue overflows. Only applies to -calc-mode=async or -calc-mode=parallel.")
+	flag.IntVar(&queueSize, "queue-size", calculatorQueueSize, "maximum task queue capacity. Returns 503 if the queue overflows. Only applies to async or parallel modes.")
 	flag.StringVar(&pprofAddr, "pprof-addr", "localhost:6060", "pprof listen address (host:port, empty to disable)")
+	flag.IntVar(&maxConns, "max-conns", 0, "maximum number of connections (0 - without restrictions)")
 	flag.Parse()
 
 	interval := time.Duration(intervalSec * float64(time.Second))
@@ -75,6 +79,10 @@ func main() {
 
 	if (calcMode == Async || calcMode == Parallel) && queueSize <= 0 {
 		usage("queue-size must be positive")
+	}
+
+	if maxConns < 0 {
+		usage("max-conns cannot be negative")
 	}
 
 	if err := operators.LoadLibraries(cLibPath, rustLibPath); err != nil {
@@ -90,6 +98,7 @@ func main() {
 		CalcMode:  calcMode,
 		QueueSize: queueSize,
 		PprofAddr: pprofAddr,
+		MaxConns:  maxConns,
 	})
 	if err != nil {
 		slog.Error("abnormal shutdown", "error", err)
@@ -108,17 +117,29 @@ type Config struct {
 	CalcMode  CalcMode
 	QueueSize int
 	PprofAddr string
+	MaxConns  int
 }
 
 type Service struct {
 	calculator calculators.Calculator
-	aggregator *metrics.Aggregator
+	counter    *metrics.Aggregator
 	printer    *metrics.Printer
 }
 
-func (s *Service) Calculate(num int64) error      { return s.calculator.Calculate(num) }
-func (s *Service) CountRequests()                 { s.aggregator.CountRequests(1) }
-func (s *Service) PrintMetrics(w io.Writer) error { _, err := s.printer.Print(w); return err }
+func (s *Service) Calculate(num int64) error              { return s.calculator.Calculate(num) }
+func (s *Service) CountRequests(kind metrics.RequestKind) { s.counter.CountRequests(kind, 1) }
+func (s *Service) PrintMetrics(w io.Writer) error         { _, err := s.printer.Print(w); return err }
+
+type metricsAggr struct {
+	*metrics.Aggregator
+}
+
+func (m *metricsAggr) RecordAddDurations(batch []time.Duration) {
+	m.RecordDurations(metrics.Add, batch)
+}
+func (m *metricsAggr) RecordSubDurations(batch []time.Duration) {
+	m.RecordDurations(metrics.Sub, batch)
+}
 
 func run(ctx context.Context, cfg Config) error {
 	var aggregator *metrics.Aggregator
@@ -129,6 +150,10 @@ func run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	defer func() { _ = listener.Close() }()
+
+	if cfg.MaxConns != 0 {
+		listener = netutil.LimitListener(listener, cfg.MaxConns)
+	}
 
 	stopPprof, err := startPprof(cfg.PprofAddr)
 	if err != nil {
@@ -149,23 +174,27 @@ func run(ctx context.Context, cfg Config) error {
 	case Parallel:
 		pool := pools.NewBatchPool[time.Duration](samplesBatchSize)
 		aggregator = metrics.NewAggregator(aggregatorQueueSize, nil, pool)
-		calculator = calculators.NewParallelCalculator(cfg.QueueSize, aggregator, pool)
+		calculator = calculators.NewParallelCalculator(cfg.QueueSize, &metricsAggr{aggregator}, pool)
 
 	default:
-		return fmt.Errorf("unknown sync kind: %v", cfg.CalcMode)
+		return fmt.Errorf("unknown calculation mode: %v", cfg.CalcMode)
 	}
 
 	defer aggregator.Stop()
-	if calculator, ok := calculator.(interface{ Stop() }); ok {
-		defer calculator.Stop()
-	}
 
-	stopPrinter := startPeriodicPrinter(ctx, calculator, cfg.Interval)
+	stopPrinter := startPeriodicPrinter(calculator, cfg.Interval)
 	defer stopPrinter()
+
+	if calculator, ok := calculator.(interface{ Stop() }); ok {
+		defer func() {
+			slog.Info("stop calculator")
+			calculator.Stop()
+		}()
+	}
 
 	router := api.New(&Service{
 		calculator: calculator,
-		aggregator: aggregator,
+		counter:    aggregator,
 		printer:    metrics.NewPrinter(aggregator),
 	})
 
@@ -179,7 +208,11 @@ func run(ctx context.Context, cfg Config) error {
 	done := make(chan error, 1)
 	go func() {
 		defer close(done)
-		slog.Info("server listening on", "addr", cfg.Addr, "mode", cfg.CalcMode, "queue", cfg.QueueSize)
+		queueSize := cfg.QueueSize
+		if cfg.CalcMode == Sync {
+			queueSize = 0
+		}
+		slog.Info("server listening on", "addr", cfg.Addr, "mode", cfg.CalcMode, "queue", queueSize)
 		done <- server.Serve(listener)
 	}()
 
@@ -240,16 +273,16 @@ type valuer interface {
 	Values() calculators.Values
 }
 
-func startPeriodicPrinter(ctx context.Context, calc valuer, interval time.Duration) func() {
+func startPeriodicPrinter(calc valuer, interval time.Duration) func() {
 	done := make(chan struct{})
-	ctx, cancel := context.WithCancel(ctx)
+	stopCh := make(chan struct{})
 	go func() {
 		defer close(done)
 		tk := time.NewTicker(interval)
 		defer tk.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-stopCh:
 				printTotals("final", calc)
 				return
 			case <-tk.C:
@@ -258,12 +291,12 @@ func startPeriodicPrinter(ctx context.Context, calc valuer, interval time.Durati
 		}
 	}()
 	return func() {
-		cancel()
+		close(stopCh)
 		<-done
 	}
 }
 
 func printTotals(label string, calc valuer) {
 	vals := calc.Values()
-	fmt.Printf("[%s] sum=%d sub=%d\n", label, vals.Sum, vals.Sub)
+	log.Printf("[%s] sum=%d sub=%d\n", label, vals.Sum, vals.Sub)
 }

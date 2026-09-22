@@ -4,4 +4,7 @@ go 1.26.5
 
 require github.com/aaa2ppp/be v0.0.0-20260806170358-5bee5146bd6e
 
-require github.com/HdrHistogram/hdrhistogram-go v1.3.0
+require (
+	github.com/HdrHistogram/hdrhistogram-go v1.3.0
+	golang.org/x/net v0.59.0
+)

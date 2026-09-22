@@ -11,7 +11,7 @@ import (
 )
 
 const histMinValue = 1 * time.Microsecond
-const histMaxValue = 10 * time.Millisecond
+const histMaxValue = 100 * time.Millisecond
 const histBuckets = 60
 const rotateInterval = time.Second
 
@@ -21,42 +21,75 @@ type Sample struct {
 }
 
 type Snapshot struct {
-	AddHist *hdrhistogram.Histogram
-	SubHist *hdrhistogram.Histogram
-	RPS     []uint64
+	Histograms [durationKindSize]*hdrhistogram.Histogram
+	Requests   [requestKindSize][]uint64
+}
+
+//go:generate enumer -type RequestKind
+type RequestKind uint8
+
+const (
+	Ok RequestKind = iota
+	Overload
+	BadRequest
+	Failed
+
+	requestKindSize // держать последним
+)
+
+type requestsMsg struct {
+	kind RequestKind
+	n    uint64
+}
+
+//go:generate enumer -type DurationKind
+type DurationKind uint8
+
+const (
+	Add DurationKind = iota
+	Sub
+
+	durationKindSize // держать последним
+)
+
+type durationsMsg struct {
+	kind DurationKind
+	vals []time.Duration
 }
 
 type Aggregator struct {
-	addWHist       *hdrhistogram.WindowedHistogram
-	subWHist       *hdrhistogram.WindowedHistogram
-	rps            *queue.Deque[uint64]
-	sampleCh       chan Sample
-	samplesCh      chan []Sample
-	samplesPool    *pools.BatchPool[Sample]
-	addDurationsCh chan []time.Duration
-	subDurationsCh chan []time.Duration
-	durationsPool  *pools.BatchPool[time.Duration]
-	countCh        chan uint64
-	getSnapCh      chan chan Snapshot
-	stop           chan struct{}
-	done           chan struct{}
+	hists         [durationKindSize]*hdrhistogram.WindowedHistogram
+	reqs          [requestKindSize]*queue.Deque[uint64]
+	sampleCh      chan Sample
+	samplesCh     chan []Sample
+	samplesPool   *pools.BatchPool[Sample]
+	durationsCh   chan durationsMsg
+	durationsPool *pools.BatchPool[time.Duration]
+	reqsCh        chan requestsMsg
+	getSnapCh     chan chan Snapshot
+	stop          chan struct{}
+	done          chan struct{}
 }
 
 func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], durationsPool *pools.BatchPool[time.Duration]) *Aggregator {
 	a := &Aggregator{
-		addWHist:       hdrhistogram.NewWindowed(histBuckets, histMinValue.Nanoseconds(), histMaxValue.Nanoseconds(), 3),
-		subWHist:       hdrhistogram.NewWindowed(histBuckets, histMinValue.Nanoseconds(), histMaxValue.Nanoseconds(), 3),
-		rps:            queue.NewDequeFrom(make([]uint64, histBuckets)),
-		sampleCh:       make(chan Sample, queueSize),
-		samplesCh:      make(chan []Sample, queueSize),
-		samplesPool:    samplesPool,
-		addDurationsCh: make(chan []time.Duration, queueSize),
-		subDurationsCh: make(chan []time.Duration, queueSize),
-		durationsPool:  durationsPool,
-		countCh:        make(chan uint64, queueSize),
-		getSnapCh:      make(chan chan Snapshot),
-		stop:           make(chan struct{}),
-		done:           make(chan struct{}),
+		sampleCh:      make(chan Sample, queueSize),
+		samplesCh:     make(chan []Sample, queueSize),
+		samplesPool:   samplesPool,
+		durationsCh:   make(chan durationsMsg, queueSize),
+		durationsPool: durationsPool,
+		reqsCh:        make(chan requestsMsg, queueSize),
+		getSnapCh:     make(chan chan Snapshot),
+		stop:          make(chan struct{}),
+		done:          make(chan struct{}),
+	}
+
+	for i := range a.hists {
+		a.hists[i] = hdrhistogram.NewWindowed(histBuckets, histMinValue.Nanoseconds(), histMaxValue.Nanoseconds(), 3)
+	}
+
+	for i := range a.reqs {
+		a.reqs[i] = queue.NewDequeFrom(make([]uint64, histBuckets))
 	}
 
 	go a.serve()
@@ -64,14 +97,17 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 }
 
 func (a *Aggregator) rotate() {
-	a.rps.PopFront()
-	a.rps.PushBack(0)
-	a.addWHist.Rotate()
-	a.subWHist.Rotate()
+	for _, q := range a.reqs {
+		q.PopFront()
+		q.PushBack(0)
+	}
+	for _, h := range a.hists {
+		h.Rotate()
+	}
 }
 
-func (a *Aggregator) countRPS(n uint64) {
-	a.rps.PushBack(a.rps.PopBack() + n)
+func (a *Aggregator) countReqs(kind RequestKind, n uint64) {
+	a.reqs[kind].PushBack(a.reqs[kind].PopBack() + n)
 }
 
 func (a *Aggregator) recordDuration(hist *hdrhistogram.WindowedHistogram, duration time.Duration) {
@@ -88,19 +124,29 @@ func (a *Aggregator) recordDurations(hist *hdrhistogram.WindowedHistogram, durat
 
 func (a *Aggregator) recordSamples(batch []Sample) {
 	for _, sample := range batch {
-		a.recordDuration(a.addWHist, sample.AddDuration)
-		a.recordDuration(a.subWHist, sample.SubDuration)
+		a.recordDuration(a.hists[Add], sample.AddDuration)
+		a.recordDuration(a.hists[Sub], sample.SubDuration)
 	}
 }
 
 func (a *Aggregator) closeChannels() {
 	close(a.sampleCh)
 	close(a.samplesCh)
-	close(a.addDurationsCh)
-	close(a.subDurationsCh)
-	close(a.countCh)
+	close(a.durationsCh)
+	close(a.reqsCh)
 	close(a.getSnapCh)
 	close(a.done)
+}
+
+func (a *Aggregator) makeSnapshot() Snapshot {
+	var snap Snapshot
+	for kind := range a.hists {
+		snap.Histograms[kind] = a.hists[kind].Merge()
+	}
+	for kind := range a.reqs {
+		snap.Requests[kind] = a.reqs[kind].ToSlice()
+	}
+	return snap
 }
 
 func (a *Aggregator) serve() {
@@ -115,8 +161,8 @@ func (a *Aggregator) serve() {
 			a.rotate()
 
 		case sample := <-a.sampleCh:
-			a.recordDuration(a.addWHist, sample.AddDuration)
-			a.recordDuration(a.subWHist, sample.SubDuration)
+			a.recordDuration(a.hists[Add], sample.AddDuration)
+			a.recordDuration(a.hists[Sub], sample.SubDuration)
 
 		case samples := <-a.samplesCh:
 			a.recordSamples(samples)
@@ -124,27 +170,17 @@ func (a *Aggregator) serve() {
 				a.samplesPool.Put(samples)
 			}
 
-		case n := <-a.countCh:
-			a.countRPS(n)
+		case msg := <-a.reqsCh:
+			a.countReqs(msg.kind, msg.n)
 
-		case durations := <-a.addDurationsCh:
-			a.recordDurations(a.addWHist, durations)
+		case msg := <-a.durationsCh:
+			a.recordDurations(a.hists[msg.kind], msg.vals)
 			if a.durationsPool != nil {
-				a.durationsPool.Put(durations)
-			}
-
-		case durations := <-a.subDurationsCh:
-			a.recordDurations(a.subWHist, durations)
-			if a.durationsPool != nil {
-				a.durationsPool.Put(durations)
+				a.durationsPool.Put(msg.vals)
 			}
 
 		case snapCh := <-a.getSnapCh:
-			snapCh <- Snapshot{
-				AddHist: a.addWHist.Merge(),
-				SubHist: a.subWHist.Merge(),
-				RPS:     a.rps.ToSlice(),
-			}
+			snapCh <- a.makeSnapshot()
 
 		case <-a.stop:
 			return
@@ -162,19 +198,14 @@ func (a *Aggregator) RecordSamples(samples []Sample) {
 	a.samplesCh <- samples
 }
 
-// RecordAddDurations записывает продолжительность вызовов Add финкции. После Stop паникует.
-func (a *Aggregator) RecordAddDurations(durations []time.Duration) {
-	a.addDurationsCh <- durations
-}
-
-// RecordSubDurations записывает продолжительность вызовов Sub финкции. После Stop паникует.
-func (a *Aggregator) RecordSubDurations(durations []time.Duration) {
-	a.subDurationsCh <- durations
+// RecordDurations записывает продолжительность вызовов kind финкции. После Stop паникует.
+func (a *Aggregator) RecordDurations(kind DurationKind, durations []time.Duration) {
+	a.durationsCh <- durationsMsg{kind, durations}
 }
 
 // CountRequests подсчитывает количество запросов. После Stop паникует.
-func (a *Aggregator) CountRequests(n uint64) {
-	a.countCh <- n
+func (a *Aggregator) CountRequests(kind RequestKind, n uint64) {
+	a.reqsCh <- requestsMsg{kind, n}
 }
 
 // GetSnapshot возвращает текущий срез метрик. После Stop паникует.

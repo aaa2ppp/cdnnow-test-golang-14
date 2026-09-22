@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/calculators"
+	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
 	"aaa2ppp/cdnnow-test-golang-14/internal/operators"
 
 	"github.com/aaa2ppp/be"
@@ -28,9 +29,11 @@ func init() {
 	}
 }
 
+type requestCounts map[metrics.RequestKind]int
+
 type mockService struct {
-	calls int
-	count int
+	calls  int
+	counts requestCounts
 
 	calculateFunc    func(int64) error
 	printMetricsFunc func(io.Writer) error
@@ -52,22 +55,28 @@ func (s *mockService) PrintMetrics(w io.Writer) error {
 	return nil
 }
 
-func (s *mockService) CountRequests() {
-	s.count++
+func (s *mockService) CountRequests(kind metrics.RequestKind) {
+	if s.counts == nil {
+		s.counts = requestCounts{}
+	}
+	s.counts[kind]++
 }
 
 func TestAPI(t *testing.T) {
+	// NOTE: метрики считаются только на ручке `POST /calc`
 	tests := []struct {
 		name       string
 		request    string
 		newService func() *mockService
 		wantStatus int
 		wantCalls  int
+		wantCounts requestCounts
 	}{
 		{
 			name:       "success",
 			request:    "POST /calc?num=42",
 			wantStatus: 200,
+			wantCounts: requestCounts{metrics.Ok: 1},
 			wantCalls:  1,
 		},
 		{
@@ -83,11 +92,13 @@ func TestAPI(t *testing.T) {
 		{
 			name:       "missing num",
 			request:    "POST /calc",
+			wantCounts: requestCounts{metrics.BadRequest: 1},
 			wantStatus: 400,
 		},
 		{
 			name:       "bad num",
 			request:    "POST /calc?num=abc",
+			wantCounts: requestCounts{metrics.BadRequest: 1},
 			wantStatus: 400,
 		},
 		{
@@ -98,8 +109,9 @@ func TestAPI(t *testing.T) {
 					calculateFunc: func(int64) error { return calculators.ErrOverloaded },
 				}
 			},
-			wantStatus: 503,
 			wantCalls:  1,
+			wantCounts: requestCounts{metrics.Overload: 1},
+			wantStatus: 503,
 		},
 		{
 			name:    "unknown error",
@@ -109,8 +121,20 @@ func TestAPI(t *testing.T) {
 					calculateFunc: func(int64) error { return errors.New("unknown error") },
 				}
 			},
-			wantStatus: 500,
 			wantCalls:  1,
+			wantCounts: requestCounts{metrics.Failed: 1},
+			wantStatus: 500,
+		},
+		{
+			name:       "metrics",
+			request:    "GET /metrics",
+			wantCalls:  1,
+			wantStatus: 200,
+		},
+		{
+			name:       "ping",
+			request:    "GET /ping",
+			wantStatus: 200,
 		},
 	}
 
@@ -143,6 +167,7 @@ func TestAPI(t *testing.T) {
 			be.Err(t, err, nil)
 
 			be.Equal(t, svc.calls, tt.wantCalls)
+			be.Equal(t, svc.counts, tt.wantCounts)
 		})
 	}
 }
@@ -158,7 +183,7 @@ func (c *mockCalcService) Calculate(num int64) error {
 	return nil
 }
 
-func (c *mockCalcService) CountRequests() {}
+func (c *mockCalcService) CountRequests(metrics.RequestKind) {}
 
 func BenchmarkAPI(b *testing.B) {
 	type service interface {
@@ -180,7 +205,7 @@ func BenchmarkAPI(b *testing.B) {
 			"sync calc",
 			func() service {
 				return &mockCalcService{
-					Calculator: &calculators.SyncCalculator{},
+					Calculator: calculators.NewSyncCalculator(nil),
 				}
 			},
 		},
@@ -253,7 +278,7 @@ func BenchmarkAPIParallel(b *testing.B) {
 			"sync calc",
 			func() service {
 				return &mockCalcService{
-					Calculator: &calculators.SyncCalculator{},
+					Calculator: calculators.NewSyncCalculator(nil),
 				}
 			},
 		},

@@ -44,6 +44,26 @@ func (r *Printer) getReportText() []byte {
 	return r.cache
 }
 
+var requestMeta = []struct {
+	kind RequestKind
+	name string
+	help string
+}{
+	{Ok, "calc_ok_1s", "Successfully handled requests per second"},
+	{BadRequest, "calc_bad_request_1s", "Requests rejected due to bad client data per second"},
+	{Overload, "calc_overload_1s", "Requests rejected due to overload per second"},
+	{Failed, "calc_failed_1s", "Requests failed during execution per second"},
+}
+
+var histogramMeta = []struct {
+	kind DurationKind
+	name string
+	help string
+}{
+	{Add, "calc_c_duration_ns", "C `add` function call duration, nanoseconds"},
+	{Sub, "calc_rust_duration_ns", "Rust `sub` function call duration, nanoseconds"},
+}
+
 func printReport(b io.Writer, snap Snapshot) error {
 	var err error
 	printf := func(f string, a ...any) {
@@ -54,25 +74,24 @@ func printReport(b io.Writer, snap Snapshot) error {
 	}
 
 	// --- RPS за последние 60 секунд ---
-	printf("# HELP calc_rps_1s Requests per second, last 60 seconds\n")
-	printf("# TYPE calc_rps_1s gauge\n")
-	for i := len(snap.RPS) - 1; i >= 0; i-- {
-		sec := i - (len(snap.RPS) - 1)
-		val := snap.RPS[i]
-		printf("calc_rps_1s{second=\"%d\"} %d\n", sec, val)
+	for _, meta := range requestMeta {
+		printf("# HELP %s %s, last 60 seconds\n", meta.name, meta.help)
+		printf("# TYPE %s gauge\n", meta.name)
+		rps := snap.Requests[meta.kind]
+		for i := len(rps) - 1; i >= 0; i-- {
+			sec := i - (len(rps) - 1)
+			val := rps[i]
+			printf("%s{second=\"%d\"} %d\n", meta.name, sec, val)
+		}
 	}
 
-	// --- p95/p99 для C ---
-	printf("# HELP calc_c_duration_ns C `add` function call duration, nanoseconds\n")
-	printf("# TYPE calc_c_duration_ns gauge\n")
-	printf("calc_c_duration_ns{quantile=\"0.95\"} %d\n", snap.AddHist.ValueAtPercentile(95))
-	printf("calc_c_duration_ns{quantile=\"0.99\"} %d\n", snap.AddHist.ValueAtPercentile(99))
-
-	// --- p95/p99 для Rust ---
-	printf("# HELP calc_rust_duration_ns Rust `sub` function call duration, nanoseconds\n")
-	printf("# TYPE calc_rust_duration_ns gauge\n")
-	printf("calc_rust_duration_ns{quantile=\"0.95\"} %d\n", snap.SubHist.ValueAtPercentile(95))
-	printf("calc_rust_duration_ns{quantile=\"0.99\"} %d\n", snap.SubHist.ValueAtPercentile(99))
+	// --- p95/p99 для C/Rust функций ---
+	for _, meta := range histogramMeta {
+		printf("# HELP %s %s\n", meta.name, meta.help)
+		printf("# TYPE %s gauge\n", meta.name)
+		printf("%s{quantile=\"0.95\"} %d\n", meta.name, snap.Histograms[meta.kind].ValueAtPercentile(95))
+		printf("%s{quantile=\"0.99\"} %d\n", meta.name, snap.Histograms[meta.kind].ValueAtPercentile(99))
+	}
 
 	return err
 }

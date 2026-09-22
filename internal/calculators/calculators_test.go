@@ -27,7 +27,7 @@ func TestCalculators(t *testing.T) {
 		{
 			"sync calc",
 			func() Calculator {
-				return &SyncCalculator{}
+				return NewSyncCalculator(nil)
 			},
 		},
 		{
@@ -57,7 +57,8 @@ func TestCalculators(t *testing.T) {
 				defer calc.Stop()
 			}
 			for _, num := range []int64{3, 4, 5, 6, 7, 8, 9} {
-				_ = calc.Calculate(num)
+				err := calc.Calculate(num)
+				be.Err(t, err, nil)
 			}
 			time.Sleep(10 * time.Millisecond)
 			vals := calc.Values()
@@ -68,14 +69,14 @@ func TestCalculators(t *testing.T) {
 }
 
 func BenchmarkSyncCalc(b *testing.B) {
-	calc := SyncCalculator{}
+	calc := NewSyncCalculator(nil)
 	for i := 0; i < b.N; i++ {
 		_ = calc.Calculate(42)
 	}
 }
 
 func BenchmarkAsyncCalc(b *testing.B) {
-	c := NewAsyncCalculator(0, nil, nil)
+	c := NewAsyncCalculator(1024, nil, nil)
 	c.IgnoreOverload()
 	for i := 0; i < b.N; i++ {
 		_ = c.Calculate(42)
@@ -100,7 +101,7 @@ func BenchmarkSingle(b *testing.B) {
 
 	for _, cs := range cases {
 		b.Run(cs.name, func(b *testing.B) {
-			c := newSingleAsyncCalculator(cs.calcFn, 0, nil, nil)
+			c := newSingleAsyncCalculator(cs.calcFn, 1024, nil, nil)
 			c.IgnoreOverload()
 			for i := 0; i < b.N; i++ {
 				_ = c.Calculate(42)
@@ -111,7 +112,7 @@ func BenchmarkSingle(b *testing.B) {
 }
 
 func BenchmarkParallelCalc(b *testing.B) {
-	c := NewParallelCalculator(0, nil, nil)
+	c := NewParallelCalculator(1024, nil, nil)
 	c.IgnoreOverload()
 	for i := 0; i < b.N; i++ {
 		_ = c.Calculate(42)
