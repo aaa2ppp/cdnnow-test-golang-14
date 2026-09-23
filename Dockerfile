@@ -1,5 +1,5 @@
 # --- Собираем C и Rust библиотеки ---
-FROM rust:1.98-trixie AS rust-builder
+FROM rust:1.98.1-slim-trixie AS lib-builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ RUN ls && mkdir -p bin \
 
 
 # --- Собираем Go-сервер ---
-FROM golang:1.26-trixie AS go-builder
+FROM golang:1.26.8-trixie AS go-builder
 
 WORKDIR /app
 
@@ -33,12 +33,12 @@ RUN CGO_ENABLED=1 go build -o bin/server ./cmd/server \
 
 
 # --- Собираем минимальный рабочий образ ---
-FROM gcr.io/distroless/cc-debian13
+FROM gcr.io/distroless/cc-debian13@sha256:4594d59540d1948417f6ca2829ddd9294493a7c68b7528f4dd459de7f203a750
 
 WORKDIR /app
 
-COPY --from=rust-builder /app/bin/ ./bin/
-COPY --from=go-builder   /app/bin/ ./bin/
+COPY --from=lib-builder /app/bin/ ./bin/
+COPY --from=go-builder  /app/bin/ ./bin/
 
 EXPOSE 8080
 USER 65535:65535
