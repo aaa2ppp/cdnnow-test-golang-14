@@ -25,9 +25,9 @@ func NewPrinter(stats SnapshotGetter) *Printer {
 	}
 }
 
-func (r *Printer) Print(w io.Writer) (int64, error) {
-	n, err := w.Write(r.getReportText())
-	return int64(n), err
+func (r *Printer) Print(w io.Writer) error {
+	_, err := w.Write(r.getReportText())
+	return err
 }
 
 func (r *Printer) getReportText() []byte {

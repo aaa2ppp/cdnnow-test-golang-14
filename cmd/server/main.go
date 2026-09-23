@@ -128,7 +128,7 @@ type Service struct {
 
 func (s *Service) Calculate(num int64) error              { return s.calculator.Calculate(num) }
 func (s *Service) CountRequests(kind metrics.RequestKind) { s.counter.CountRequests(kind, 1) }
-func (s *Service) PrintMetrics(w io.Writer) error         { _, err := s.printer.Print(w); return err }
+func (s *Service) PrintMetrics(w io.Writer) error         { return s.printer.Print(w) }
 
 type metricsAggr struct {
 	*metrics.Aggregator
