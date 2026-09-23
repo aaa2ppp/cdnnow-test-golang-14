@@ -1,11 +1,19 @@
-BIN_DIR = ./bin
-LIB_DIR = $(BIN_DIR)
-TMP_DIR = ./tmp
+BIN_DIR  := ./bin
+LIB_DIR  := $(BIN_DIR)
+TMP_DIR  := ./tmp
+
+C_DIR := ./c_lib
+C_SRC := $(C_DIR)/calculator.c
+C_LIB := $(LIB_DIR)/libcalculator.so
+
+RUST_DIR := ./rust_lib
+RUST_SRC := $(RUST_DIR)/src/lib.rs
+RUST_LIB := $(LIB_DIR)/libcalculator_rust.so
 
 # source and dest for merge, patch, etc...
 SRC   ?= .
 DST   ?= 1
-MERGE_CODE = sh scripts/merge-code.sh
+MERGE_CODE := sh scripts/merge-code.sh
 
 # tip: to disable all linters can set LINTER=true
 LINTER ?= golangci-lint
@@ -53,11 +61,24 @@ test: ## run tests
 
 
 .PHONY: build-libs
-build-libs: ## build C & Rust test libs
+build-libs: $(C_LIB) $(RUST_LIB) ## build C & Rust test libs
+
+C_HDR := $(wildcard $(C_DIR)/*.h)
+
+$(C_LIB): $(C_SRC) $(C_HDR)
 	@mkdir -p $(LIB_DIR)
-	gcc -shared -fPIC -O2 -o $(LIB_DIR)/libcalculator.so c_lib/calculator.c
-	cd rust_lib && cargo build --release
-	cp -f rust_lib/target/release/libcalculator_rust.so $(LIB_DIR)
+	gcc -shared -fPIC -O2 -o $@ $<
+
+RUST_TOML  := $(RUST_DIR)/Cargo.toml
+RUST_LOCK  := $(RUST_DIR)/Cargo.lock
+RUST_BUILT := $(RUST_DIR)/target/release/libcalculator_rust.so
+
+$(RUST_BUILT): $(RUST_SRC) $(RUST_TOML) $(RUST_LOCK)
+	cd $(RUST_DIR) && cargo build --release
+
+$(RUST_LIB): $(RUST_BUILT)
+	@mkdir -p $(LIB_DIR)
+	cp -f $< $@
 
 .PHONY: build-server
 build-server: ## build server
@@ -77,6 +98,7 @@ bench: ## run benchmarks
 .PHONY: clean
 clean: ## remove bin and temp files
 	-rm -fr *.so $(BIN_DIR) $(LIB_DIR) $(TMP_DIR)
+	-cd $(RUST_DIR) && cargo clean
 
 
 .PHONY: FORCE merge patch help 
