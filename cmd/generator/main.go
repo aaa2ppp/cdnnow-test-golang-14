@@ -21,7 +21,7 @@ import (
 	"github.com/HdrHistogram/hdrhistogram-go"
 )
 
-const startJitter = 10 * time.Millisecond
+const jitterFloor = 10 * time.Millisecond
 const histMinValue = 10 * time.Microsecond
 const histMaxValue = 100 * time.Millisecond
 
@@ -45,6 +45,7 @@ func main() {
 		timeoutSec  float64
 		noKeepAlive bool
 		percentiles bool
+		duration    time.Duration
 	)
 	flag.StringVar(&url, "url", "http://localhost:8080/calc", "calculator endpoint")
 	flag.IntVar(&threads, "n", 10, "alias for threads")
@@ -53,10 +54,16 @@ func main() {
 	flag.Float64Var(&timeoutSec, "timeout", 5.0, "HTTP request timeout, seconds")
 	flag.BoolVar(&noKeepAlive, "no-keep-alive", false, "new connection will be created for each request")
 	flag.BoolVar(&percentiles, "percentiles", false, "calculate percentiles")
+	flag.DurationVar(&duration, "d", 0, "total duration of the load test, e.g., 10m, 1h (0 for unlimited)")
+	flag.DurationVar(&duration, "duration", 0, "total duration of the load test, e.g., 10m, 1h (0 for unlimited)")
 	flag.Parse()
 
 	if threads <= 0 {
 		usage("threads must be positive")
+	}
+
+	if duration < 0 {
+		usage("duration cannot be negative")
 	}
 
 	interval := time.Duration(intervalSec * float64(time.Second))
@@ -87,6 +94,12 @@ func main() {
 	workCtx, stop := signal.NotifyContext(abortCtx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if duration > 0 {
+		ctx, cancel := context.WithTimeout(workCtx, duration)
+		defer cancel()
+		workCtx = ctx
+	}
+
 	stats := &Statistics{}
 	hists := make([]*hdrhistogram.Histogram, threads)
 
@@ -99,11 +112,11 @@ func main() {
 		}
 		go func(id int, hist *hdrhistogram.Histogram) {
 			defer wg.Done()
-			time.Sleep(time.Duration(rand.Int64N(int64(startJitter))))
 			w := Worker{
-				ID:       id,
-				Interval: interval,
-				Stats:    stats,
+				ID:        id,
+				Interval:  interval,
+				Stats:     stats,
+				ErrWindow: 2 * time.Second,
 			}
 			w.Run(workCtx, func() error {
 				num := rand.IntN(201) - 100
@@ -130,7 +143,7 @@ func main() {
 	defer tm.Stop()
 
 	wg.Wait()
-	log.Printf("Total requests: ok=%d errors=%d", stats.Ok.Load(), stats.Errors.Load())
+	_, _ = fmt.Printf("\nTotal requests: ok=%d errors=%d\n", stats.Ok.Load(), stats.Errors.Load())
 
 	if percentiles {
 		hist := hists[0]
@@ -141,7 +154,8 @@ func main() {
 		if dropped > 0 {
 			log.Printf("hist.Merge: total dropped %d values", dropped)
 		}
-		_, _ = hist.PercentilesPrint(os.Stderr, 1, float64(time.Microsecond))
+		_, _ = fmt.Println()
+		_, _ = hist.PercentilesPrint(os.Stdout, 1, float64(time.Microsecond))
 	}
 }
 
@@ -185,23 +199,44 @@ type Worker struct {
 	ID       int
 	Interval time.Duration
 	Stats    *Statistics
+
+	ErrWindow time.Duration
+	lastErrs  map[string]errorCount
 }
 
 func (w *Worker) Run(ctx context.Context, work func() error) {
-	tm := time.NewTimer(0)
+	jitter := time.Duration(rand.Int64N(int64(jitterFloor + w.Interval)))
+	tm := time.NewTimer(jitter)
 	defer tm.Stop()
 
+	select {
+	case <-ctx.Done():
+		return
+	case <-tm.C:
+	}
+
+	w.lastErrs = make(map[string]errorCount)
+	defer w.flushErrs(true)
+
+	flushTime := time.Now().Add(time.Second)
+
 	for ctx.Err() == nil {
-		err := work()
-		if errors.Is(err, context.Canceled) {
-			continue
-		}
-		if err != nil {
+		if err := work(); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
 			w.Stats.Errors.Add(1)
-			log.Printf("[worker %d] request failed: %v\n", w.ID, err)
+			w.logErr(err)
 		} else {
 			w.Stats.Ok.Add(1)
 		}
+
+		now := time.Now()
+		if now.Sub(flushTime) >= 0 {
+			w.flushErrs(false)
+			flushTime = now.Add(time.Second)
+		}
+
 		if w.Interval > 0 {
 			tm.Reset(w.Interval)
 			select {
@@ -211,4 +246,48 @@ func (w *Worker) Run(ctx context.Context, work func() error) {
 			}
 		}
 	}
+}
+
+type errorCount struct {
+	flushAt    time.Time
+	suppressed int
+}
+
+func (w *Worker) flushErrs(force bool) {
+	now := time.Now()
+	for msg, cnt := range w.lastErrs {
+		if cnt.suppressed > 0 && (force || now.Sub(cnt.flushAt) >= 0) {
+			w.printErr(msg, cnt.suppressed)
+		}
+		if cnt.suppressed == 0 && now.Sub(cnt.flushAt) >= 0 {
+			delete(w.lastErrs, msg)
+		}
+	}
+}
+
+func (w *Worker) printErr(msg string, suppressed int) {
+	if suppressed == 0 {
+		log.Printf("[worker %d] request failed: %s", w.ID, msg)
+	} else {
+		log.Printf("[worker %d] request failed: %s (+%d similar)", w.ID, msg, suppressed)
+	}
+	win := w.ErrWindow
+	if win == 0 {
+		win = time.Second
+	}
+	w.lastErrs[msg] = errorCount{flushAt: time.Now().Add(win)}
+}
+
+func (w *Worker) logErr(err error) {
+	msg := err.Error()
+	now := time.Now()
+
+	cnt, ok := w.lastErrs[msg]
+	if ok && now.Sub(cnt.flushAt) < 0 {
+		cnt.suppressed++
+		w.lastErrs[msg] = cnt
+		return
+	}
+
+	w.printErr(msg, cnt.suppressed)
 }
