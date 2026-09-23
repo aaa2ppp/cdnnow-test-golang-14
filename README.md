@@ -1,283 +1,170 @@
 # cdnnow-test-golang-14
 
-Проект переписывает исходный Python-сервер и генератор нагрузки на Go.
-C и Rust библиотеки сохранены как есть. Добавлены Prometheus-метрики,
-режимы вычислений, pprof, Docker-сборка и мониторинг.
-
-Исходное ТЗ лежит в `docs/TS.md`.
-
-## Что было дано и что сделано
-
-Дано:
-
-- `docs/TS.md` - исходное ТЗ.
-- `c_lib/` - C-библиотека с функцией `add`.
-- `rust_lib/` - Rust-библиотека с функцией `sub`.
-- `build.sh` - скрипт сборки библиотек.
-- `calculator_server.py` - исходный HTTP-сервер на Python.
-- `generator.py` - исходный генератор нагрузки на Python.
-
-Сделано:
-
-- Go-сервер `cmd/server`.
-- Go-генератор `cmd/generator`.
-- Go-healthcheck `cmd/healthcheck`.
-- Внутренние пакеты `internal/`.
-- Makefile для сборки, тестов и бенчмарков.
-- Dockerfile с multi-stage сборкой.
-- Docker Compose для Prometheus и Grafana.
-- Тесты и бенчмарки.
-
-Python-файлы и `build.sh` сохранены как исходный контекст, в проекте не используются.
-
-## Соответствие ТЗ
-
-- `POST /calc?num=X` - есть. Обрабатывается максимально быстро.
-- `/metrics` - есть. Формат Prometheus.
-- RPS за последние 60 секунд - есть. 60 значений по секундам.
-- p95 и p99 для C - есть.
-- p95 и p99 для Rust - есть.
-- `generator` переписан на Go - есть.
-- Дополнительно: 
-    - режимы вычислений: `sync`, `async`, `parallel`
-    - очередь (в асинхронных режимах)
-    - pprof
-    - healthcheck
-    - Docker Compose
-    - Grafana
-    - в `lib.rs` исправлен баг (компилятор выкидывал нагрузочный цикл).
-
-## Архитектура
-
-- C-библиотека `libcalculator.so` экспортирует `add`.
-- Rust-библиотека `libcalculator_rust.so` экспортирует `sub`.
-- Пакет `internal/operators` загружает `.so` через `dlopen` и `dlsym`.
-- Пакет `internal/calculators` реализует режимы вычислений.
-- Пакет `internal/metrics` собирает RPS и гистограммы длительностей.
-- Пакет `internal/api` содержит HTTP-роуты.
-- `cmd/server` собирает все вместе.
-- `cmd/generator` создает нагрузку.
-- `cmd/healthcheck` проверяет `/ping`.
+Go-переписывание Python-сервера и генератора нагрузки. Цель - рост производительности и наблюдаемости. Вычисления выполняются исходными библиотеками `c_lib` (C, `add`) и `rust_lib` (Rust, `sub`); Go-код обеспечивает только инфраструктуру.
 
 ## Требования
 
-- Go 1.26 или новее.
-- GCC.
-- Rust и Cargo.
-- Linux. Код использует `dlopen` и `.so`.
-- Docker и Docker Compose - опционально.
+- Go 1.26.5+
+- GCC
+- Rust и Cargo
+- Linux (`dlopen`, `.so`)
+- Docker и Docker Compose - опционально
 
 ## Быстрый старт
 
-Сборка:
-
-```bash
+```sh
 make build
-```
 
-Запуск сервера:
-
-```bash
+# терминал 1
 ./bin/server
-```
 
-Запуск генератора:
-
-```bash
+# терминал 2
 ./bin/generator
 ```
 
+> Сервер занимает консоль и периодически печатает `sum` и `sub`, поэтому запускайте его в отдельном терминале.
+
 Проверка:
 
-```bash
+```sh
 curl http://localhost:8080/ping
 curl -X POST 'http://localhost:8080/calc?num=42'
 curl http://localhost:8080/metrics
 ```
 
-Через Docker:
+После `make build` артефакты лежат в `./bin`. Перед `make test` и `make bench` нужен `make build-libs` (или `make build`).
 
-```bash
+Docker Compose - опциональный демонстрационный стенд с Prometheus и Grafana. Конфиги и дашборды - в `monitoring/`.
+
+```sh
 cd monitoring
-docker compose up --build
+cp dot.env.example .env
+vi .env
+docker compose up --build -d
 ```
-
-После запуска:
 
 - сервер: `http://localhost:8080`
 - pprof: `http://localhost:6060/debug/pprof/`
-- Prometheus: `http://localhost:9090`
-- Grafana: `http://localhost:3000`
+- Prometheus: `http://localhost:9090` (только в Compose)
+- Grafana: `http://localhost:3000`, admin:admin (только в Compose)
+  <details>
+      <summary>скриншот</summary>
+      <img alt="скриншот" src="./docs/screenshots/20260920_062619-1.png"></img>
+  </details>
+
 
 ## Сборка
 
-Основные цели Makefile:
+- `make build-libs` - C и Rust библиотеки
+- `make build-server` - Go-сервер
+- `make build-generator` - Go-генератор
+- `make build` - все
+- `make test`, `make bench`
+- `make clean`
 
-- `make build-libs` - собрать C и Rust библиотеки.
-- `make build-server` - собрать Go-сервер.
-- `make build-generator` - собрать Go-генератор.
-- `make build` - собрать все.
-- `make test` - запустить тесты.
-- `make bench` - запустить бенчмарки.
-- `make clean` - удалить `bin`, `tmp` и `.so`.
-
-Dockerfile использует три стадии:
-
-1. `rust-builder` - собирает C и Rust библиотеки.
-2. `go-builder` - собирает Go-сервер и healthcheck.
-3. `distroless/cc-debian13` - минимальный runtime.
 
 ## Конфигурация сервера
-
-Флаги `cmd/server`:
 
 - `-host` - адрес привязки. По умолчанию `0.0.0.0`.
 - `-port` - порт. По умолчанию `8080`.
 - `-c-lib` - путь к `libcalculator.so`.
 - `-rust-lib` - путь к `libcalculator_rust.so`.
-- `-interval` - период печати sum и sub. По умолчанию `5.0` секунд.
-- `-calc-mode` - режим вычислений: `sync`, `async`, `parallel`.
-- `-queue-size` - размер очереди для `async` и `parallel`. По умолчанию `1024`.
-- `-pprof-addr` - адрес pprof. По умолчанию `localhost:6060`, пустая строка отключает pprof.
+- `-interval` - период печати `sum` и `sub`, секунды. По умолчанию `5.0`.
+- `-calc-mode` - `sync`, `async`, `parallel`. По умолчанию `async`.
+- `-max-conns` - максимальное количество TCP соединений к серверу. По умолчанию `0` - без ограничений.
+- `-queue-size` - максимальный размер очереди. Применимо только для `async` и `parallel`. По умолчанию `1024`.
+- `-pprof-addr` - адрес pprof. По умолчанию `localhost:6060`, пустая строка отключает.
 
-Режимы:
+По умолчанию библиотеки ищутся рядом с исполняемым файлом.
 
-- `sync` - клиент ждет завершения вычислений.
-- `async` - вычисления в отдельной горутине. Очередь. При переполнении 503.
-- `parallel` - как `async`, но `add` и `sub` выполняются в отдельных горутинах.
+```sh
+./bin/server -calc-mode parallel -queue-size 2048
+```
+
+### Режимы
+
+| Режим      | Поведение                              | Когда выбирать |
+|:-----------|:---------------------------------------|:---------------|
+| `sync`     | клиент ждёт окончания вычислений       | нужно подтверждение, что вычисление выполнено |
+| `async`    | ответ сразу после постановки в очередь | нужен гарантированный порядок `add` и `sub` |
+| `parallel` | то же, `add` и `sub` параллельны       | порядок `add` и `sub` не важен |
+
+Выбор между `async` и `parallel` зависит от числа ядер и соотношения полезной нагрузки и HTTP-сервера. На одном ядре `parallel` не дает прироста. На 4 и более ядрах обычно предпочтителен. Перед выбором снимайте профиль через pprof.
 
 ## API
 
-`POST /calc?num=X`
+`POST /calc?num=X` - `num` обязательный целый параметр.
 
-- 200 - `ok`.
-- 400 - нет `num` или `num` не целое.
-- 503 - перегрузка очереди.
-- 500 - неизвестная ошибка.
+- 200 - `ok`
+- 400 - некорректный запрос
+- 500 - внутренняя ошибка
+- 503 - переполнение очереди (`async`, `parallel`)
 
-`GET /ping`
+`GET /ping` - 200 `ok`.
 
-- 200 - `ok`.
-
-`GET /metrics`
-
-- 200 - метрики в формате Prometheus.
+`GET /metrics` - метрики в формате Prometheus.
 
 ## Метрики
 
-Примеры метрик:
-
 ```text
-calc_rps_1s{second="-1"} 123
-calc_rps_1s{second="-2"} 120
+# пример для calc_ok_1s; остальные *_1s устроены так же
+# second - смещение в секундах: 0 - текущая (неполная) секунда, -1 - предыдущая, ..., -59 - самая старая в окне.
+calc_ok_1s{second="0"} 123
+calc_ok_1s{second="-1"} 123
+calc_ok_1s{second="-2"} 123
+...
 calc_c_duration_ns{quantile="0.95"} 15000
 calc_c_duration_ns{quantile="0.99"} 20000
 calc_rust_duration_ns{quantile="0.95"} 15000
 calc_rust_duration_ns{quantile="0.99"} 20000
 ```
 
-Пояснения:
+- `calc_ok_1s` - RPS за каждую секунду последней минуты.
+- `calc_overload_1s` - Количество отброшенных запросов из-за перегрузки за каждую секунду последней минуты.
+- `calc_bad_request_1s` - Количество битых запросов за каждую секунду последней минуты.
+- `calc_failed_1s` - Внутренние ошибки сервера за каждую секунду последней минуты.
+- `calc_c_duration_ns`, `calc_rust_duration_ns` - длительность `add` и `sub` в наносекундах.
+- Окно 60 секунд, ротация раз в секунду. На дашборде `second=0` отбрасывается.
 
-- `calc_rps_1s` - RPS за каждую секунду из последней минуты.
-- `second` - смещение секунды. `0` - текущая (неполная) секунда.
-- `calc_c_duration_ns` - длительность вызова C-функции `add` в наносекундах.
-- `calc_rust_duration_ns` - длительность вызова Rust-функции `sub` в наносекундах.
-- Гистограммы имеют окно 60 секунд. Ротация раз в секунду.
-- В Grafana `second=0` исключается, потому что текущая секунда еще неполная.
-
-## Нагрузочный генератор
-
-Флаги `cmd/generator`:
+## Генератор нагрузки
 
 - `-url` - endpoint. По умолчанию `http://localhost:8080/calc`.
-- `-n` или `-threads` - число воркеров. По умолчанию `10`.
-- `-interval` - пауза между запросами в секундах. `0` означает без паузы.
-- `-timeout` - таймаут HTTP-запроса в секундах.
-- `-no-keep-alive` - отключает keep-alive.
-- `-percentiles` - считать и печатать перцентили.
-
-Пример:
-
-```bash
-./bin/generator -url 'http://localhost:8080/calc' -n 50 -interval 0.001
-```
-
-По завершении работы генератор выводит общее количество `OK` и `Error`. С флагом `-percentiles` дополнительно выводит HDR-гистограмму времени выполнения запросов.
-
-## Мониторинг
-
-`monitoring/docker-compose.yml` поднимает:
-
-- `server` - Go-сервер.
-- `prometheus` - сбор метрик.
-- `grafana` - визуализация.
-
-Prometheus слушает `9090`. Grafana слушает `3000`.
-Дашборд провижинится из `monitoring/grafana/dashboards/`.
-Источник данных - `monitoring/grafana/provisioning/datasources/prometheus.yml`.
-
-## Тесты и бенчмарки
-
-Запуск тестов:
+- `-d` (`-duration`) - время выполнения (например `10s`, `1m`, `1h`). `0` - без ограничения. По умолчанию без ограничения.
+- `-n` (`-threads`) - число воркеров. По умолчанию `10`.
+- `-interval` - пауза между запросами, секунды. `0` - без паузы. По умолчанию `0.1`.
+- `-timeout` - таймаут HTTP-запроса, секунды. По умолчанию `5.0`.
+- `-no-keep-alive` - отключить keep-alive.
+- `-percentiles` - печатать HDR-гистограмму времени выполнения.
 
 ```bash
-make test
+./bin/generator -url 'http://localhost:8080/calc' -n 50 -interval 0.001 -percentiles
 ```
 
-Запуск бенчмарков:
-
-```bash
-make bench
-```
-
-Отдельные бенчмарки:
-
-- `internal/operators` - `Add`, `Sub`, Go-контроль.
-- `internal/calculators` - режимы калькулятора.
-- `internal/api` - HTTP-обработчики.
-- `cmd/hdr-test` - быстрый прогон HDR-гистограммы.
-
-## Производительность и fair-play
-
-Документы:
-
-- `docs/fair-play.md` - выравнивание условий для C и Rust.
-- `docs/ryzen-volatile-mystery.md` - почему на Ryzen `volatile` перестал тормозить.
-- `docs/panics.md` - как выглядят паники и ошибки.
-- `docs/build-link.md` - заметки про сборку и линковку.
-
-Коротко: C и Rust приведены к одинаковым условиям.
-`volatile` в C и `black_box` в Rust дают сравнимые числа.
-На Ryzen memory renaming скрывает часть задержек памяти.
-
-## Структура проекта
+## Структура
 
 ```text
 cmd/
-  generator/    - генератор нагрузки
-  healthcheck/  - проверка /ping
-  hdr-test/     - тест HDR-гистограммы
-  server/       - основной сервер
+  generator/    генератор нагрузки
+  healthcheck/  проверка /ping
+  server/       основной сервер
 internal/
-  api/          - HTTP-роуты
-  calculators/  - режимы вычислений
-  metrics/      - агрегация метрик
-  operators/    - загрузка C и Rust
-  pools/        - пулы батчей
-  queue/        - дек на кольцевом буфере
-c_lib/          - C-библиотека
-rust_lib/       - Rust-библиотека
-monitoring/     - Prometheus и Grafana
-docs/           - документация
-scripts/        - вспомогательные скрипты
+  api/          HTTP-роуты
+  calculators/  режимы вычислений
+  metrics/      агрегация метрик
+  operators/    загрузка C и Rust
+  pools/        пулы батчей
+  queue/        дек на кольцевом буфере
+c_lib/          C-библиотека
+rust_lib/       Rust-библиотека
+monitoring/     Prometheus и Grafana
+docs/           документация
+scripts/        вспомогательные скрипты
 ```
 
-## Ограничения и TODO
+## Ограничения
 
-- `CountRequests` вызывается до валидации `num`. Битые запросы попадают в RPS.
-- Ошибки в `/calc` отдельно не метрикуются.
-- `ParallelCalculator` может рассинхронизировать `sum` и `sub` при сбое.
-  Сейчас ошибок нет, но поведение стоит помнить.
-- `SyncCalculator` держит мьютекс во время вычислений.
-- Проект рассчитан на Linux из-за `dlopen`.
-- Python-версии и `build.sh` не поддерживаются. Оставлены как исходный контекст.
+- В `lib.rs` исправлен баг: нагрузочный цикл исчезал при компиляции, без правки замеры времени теряли смысл.
+- `ParallelCalculator` дает только отложенную согласованность: в моменте `sum` и `sub` могут расходиться - порядок `add` и `sub` не гарантирован.
+- `ParallelCalculator` проверяет перегрузку только на `Add`. После успешного `Add` `Sub` выполняется в режиме `IgnoreOverload`.
+  При переполнении очереди `Sub`  блокирует клиента. На практике крайне редко: `Sub` не медленнее `Add` и, как
+  правило, разгружается быстрее.

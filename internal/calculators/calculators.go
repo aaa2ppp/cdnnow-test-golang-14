@@ -28,7 +28,8 @@ type Calculator interface {
 	Values() Values
 }
 
-// SyncCalculator простой синхронный калькулятор. Клиент ждет завершения вычислений.
+// SyncCalculator выполняет вычисления синхронно.
+// Клиент ждет результата; Sum и Sub согласованы.
 type SyncCalculator struct {
 	record func(metrics.Sample)
 	lock   chan struct{} // FIFO-мьютекс, cap=1
@@ -83,8 +84,8 @@ func (c *SyncCalculator) Values() Values {
 	return vals
 }
 
-// AsyncCalculator выполняет вычисления в отдельной горутине. Вычисления производятся в фоне.
-// Синхронизация через канал.
+// AsyncCalculator выполняет вычисления в отдельной горутине.
+// Клиент не ждет; Sum и Sub согласованы.
 type AsyncCalculator struct {
 	vals      Values
 	record    func([]metrics.Sample)
@@ -377,7 +378,8 @@ func (c *asyncSingleCalculator) Stop() {
 	<-c.done
 }
 
-// ParallelCalculator вычисляет Sum и Sub в параллельных горутинах.
+// ParallelCalculator выполняет Add и Sub в параллельных горутинах.
+// Клиент не ждёт; Sum и Sub в моменте могут расходиться.
 type ParallelCalculator struct {
 	addCalc *asyncSingleCalculator
 	subCalc *asyncSingleCalculator
@@ -412,7 +414,7 @@ func NewParallelCalculator(
 	// перегрузку только в addCalc, а Sub выполнять безусловно в случае успеха Add.
 	// Если вы измените это поведение, вам необходимо внести соответствующие изменения в метод Calculate.
 	//
-	// Примечание: в редких случаях на грани это может привести к блокировке горутины HTTP-обработчика,
+	// Примечание: в редких случаях на это может привести к блокировке горутины HTTP-обработчика,
 	// что является осознанным компромиссом ради сохранения согласованности без сложного отката.
 	subCalc.IgnoreOverload()
 

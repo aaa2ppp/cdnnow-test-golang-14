@@ -60,6 +60,7 @@ find_files() {
         -o -name '*.json' \
         -o -name '*.toml' \
         -o -name '*.sh' \
+        -o -name '*.example' \
     \) \
     -print \
     | sed 's/^\.\///' \
