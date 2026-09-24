@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 type Service interface {
@@ -37,6 +38,9 @@ type RequestsCounter interface {
 
 var okBody = []byte("ok")
 
+// TODO: костыль, убрать после admission control. Не трогать без перепроверки. См. TODO.md.git
+const rejectTimeout = 5 * time.Millisecond
+
 func calcHandler(svc interface {
 	Calculator
 	RequestsCounter
@@ -57,6 +61,7 @@ func calcHandler(svc interface {
 		}
 
 		if err := svc.Calculate(num); err != nil {
+			time.Sleep(rejectTimeout)
 			switch {
 			case errors.Is(err, calculators.ErrOverloaded):
 				svc.CountRequests(metrics.Overload)
