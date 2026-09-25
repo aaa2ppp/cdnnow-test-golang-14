@@ -21,7 +21,6 @@ import (
 	"github.com/HdrHistogram/hdrhistogram-go"
 )
 
-const jitterFloor = 10 * time.Millisecond
 const histMinValue = 10 * time.Microsecond
 const histMaxValue = 100 * time.Millisecond
 
@@ -46,6 +45,7 @@ func main() {
 		noKeepAlive bool
 		percentiles bool
 		duration    time.Duration
+		jitter      time.Duration
 	)
 	flag.StringVar(&url, "url", "http://localhost:8080/calc", "calculator endpoint")
 	flag.IntVar(&threads, "n", 10, "alias for threads")
@@ -53,9 +53,12 @@ func main() {
 	flag.Float64Var(&intervalSec, "interval", 0.1, "pause between requests per thread, in seconds (0 = as fast as possible)")
 	flag.Float64Var(&timeoutSec, "timeout", 5.0, "HTTP request timeout, seconds")
 	flag.BoolVar(&noKeepAlive, "no-keep-alive", false, "new connection will be created for each request")
+	flag.BoolVar(&percentiles, "p", false, "alias for percentiles")
 	flag.BoolVar(&percentiles, "percentiles", false, "calculate percentiles")
-	flag.DurationVar(&duration, "d", 0, "total duration of the load test, e.g., 10m, 1h (0 for unlimited)")
-	flag.DurationVar(&duration, "duration", 0, "total duration of the load test, e.g., 10m, 1h (0 for unlimited)")
+	flag.DurationVar(&duration, "d", 0, "alias for duration")
+	flag.DurationVar(&duration, "duration", 0, "total duration of the load test, e.g., 10m, 1h (default 0 - unlimited)")
+	flag.DurationVar(&jitter, "j", 0, "alias for jitter")
+	flag.DurationVar(&jitter, "jitter", 0, "maximum random delay at the start of the worker, e.g., 100ms, 1s")
 	flag.Parse()
 
 	if threads <= 0 {
@@ -64,6 +67,10 @@ func main() {
 
 	if duration < 0 {
 		usage("duration cannot be negative")
+	}
+
+	if jitter < 0 {
+		usage("jitter cannot be negative")
 	}
 
 	interval := time.Duration(intervalSec * float64(time.Second))
@@ -110,6 +117,9 @@ func main() {
 		if percentiles {
 			hists[i] = hdrhistogram.New(int64(histMinValue), int64(histMaxValue), 3)
 		}
+	}
+
+	for i := range threads {
 		go func(id int, hist *hdrhistogram.Histogram) {
 			defer wg.Done()
 			w := Worker{
@@ -117,6 +127,7 @@ func main() {
 				Interval:  interval,
 				Stats:     stats,
 				ErrWindow: 2 * time.Second,
+				Jitter:    jitter,
 			}
 			w.Run(workCtx, func() error {
 				num := rand.IntN(201) - 100
@@ -202,18 +213,24 @@ type Worker struct {
 
 	ErrWindow time.Duration
 	lastErrs  map[string]errorCount
+	Jitter    time.Duration
 }
 
 func (w *Worker) Run(ctx context.Context, work func() error) {
-	jitter := time.Duration(rand.Int64N(int64(jitterFloor + w.Interval)))
-	tm := time.NewTimer(jitter)
-	defer tm.Stop()
-
-	select {
-	case <-ctx.Done():
-		return
-	case <-tm.C:
+	var tm *time.Timer
+	if w.Jitter <= 0 {
+		tm = time.NewTimer(time.Hour)
+		tm.Stop()
+	} else {
+		jitter := time.Duration(rand.Int64N(int64(w.Jitter)))
+		tm = time.NewTimer(jitter)
+		select {
+		case <-ctx.Done():
+			return
+		case <-tm.C:
+		}
 	}
+	defer tm.Stop()
 
 	w.lastErrs = make(map[string]errorCount)
 	defer w.flushErrs(true)
