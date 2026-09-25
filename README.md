@@ -49,7 +49,7 @@ docker compose up --build -d
 - Grafana: `http://localhost:3000`, admin:admin (только в Compose)
   <details>
       <summary>скриншот</summary>
-      <img alt="скриншот" src="./docs/screenshots/20260920_062619-1.png"></img>
+      <img alt="скриншот" src="./docs/screenshots/dashboard-i3-7100.png"></img>
   </details>
 
 

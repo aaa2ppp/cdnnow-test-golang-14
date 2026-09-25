@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -144,6 +145,8 @@ func (m *metricsAggr) RecordSubDurations(batch []time.Duration) {
 func run(ctx context.Context, cfg Config) error {
 	var aggregator *metrics.Aggregator
 	var calculator calculators.Calculator
+
+	slog.Info("runtime", "NumCPU", runtime.NumCPU(), "GOMAXPROCS", runtime.GOMAXPROCS(0))
 
 	listener, err := net.Listen("tcp", cfg.Addr)
 	if err != nil {

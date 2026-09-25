@@ -4,6 +4,8 @@ services:
       context: .. # Собираем из корня проекта
       dockerfile: Dockerfile
     container_name: calculator-server
+    environment:
+      GOMAXPROCS: ${GOMAXPROCS}
     command:
       - "-host=0.0.0.0"
       - "-port=8080"
