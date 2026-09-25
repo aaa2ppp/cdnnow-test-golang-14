@@ -23,14 +23,19 @@ FROM golang:1.26.8-trixie AS go-builder
 WORKDIR /app
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY cmd/healthcheck ./cmd/healthcheck
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -o bin/healthcheck ./cmd/healthcheck
+
 COPY cmd/server ./cmd/server
 COPY internal   ./internal
-RUN CGO_ENABLED=1 go build -o bin/server ./cmd/server \
-    && CGO_ENABLED=0 go build -o bin/healthcheck ./cmd/healthcheck
-
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 go build -o bin/server ./cmd/server
 
 # --- Собираем минимальный рабочий образ ---
 FROM gcr.io/distroless/cc-debian13@sha256:4594d59540d1948417f6ca2829ddd9294493a7c68b7528f4dd459de7f203a750
