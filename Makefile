@@ -31,10 +31,10 @@ E_RSET := $(if $(COLOR),\033[0m)
 E_BOLD := $(if $(COLOR),\033[1m)
 E_CMD  :=
 
-E_RED    := \033[31m
-E_GREEN  := \033[32m
-E_YELLOW := \033[33m
-E_BLUE   := \033[34m
+E_RED    := $(if $(COLOR),\033[31m)
+E_GREEN  := $(if $(COLOR),\033[32m)
+E_YELLOW := $(if $(COLOR),\033[33m)
+E_BLUE   := $(if $(COLOR),\033[34m)
 
 # Dark Modern Theme (TrueColor)
 E_KEY  := $(if $(COLOR),\033[38;2;86;156;214m)
@@ -56,7 +56,7 @@ generate: ## run go generate
 lint: ## run linters
 	CGO_ENABLED=1 $(LINTER) run ./...
 
-test: ## run tests
+test: build-libs ## run tests
 	CGO_ENABLED=1 go test --tags=test ./...
 
 
@@ -92,7 +92,7 @@ build-generator: ## build generator
 build: build-libs build-server build-generator
 
 .PHONY: bench
-bench: ## run benchmarks
+bench: build-libs ## run benchmarks
 	CGO_ENABLED=1 go test -bench . -benchmem ./...
 
 .PHONY: clean
@@ -110,10 +110,9 @@ merge: ## merge code to file for AI review
 	@$(MERGE_CODE) $(SRC) > "$(TMP_DIR)/$(DST).code"
 
 
-.NOTPARALLEL: patch
-patch: deps generate lint test build ## make precommit patch
+.NOTPARALLEL: precommit
+precommit: deps generate lint test build ## precommit check
 	@mkdir -p $(TMP_DIR)
-	
 	@(set -e; \
 	staged_list="$(TMP_DIR)/staged_list.$$$$"; \
 	unstaged_list="$(TMP_DIR)/unstaged_list.$$$$"; \
@@ -128,24 +127,42 @@ patch: deps generate lint test build ## make precommit patch
 		printf "$(E_RED)%s$(E_RSET)\n" $$intersection | sed 's/^/        /' >&2; \
 		printf "\n" >&2; \
 	fi)
-	
+
+patch: precommit ## make precommit patch
+	@mkdir -p $(TMP_DIR)
 	git diff --staged -- $(SRC) > $(TMP_DIR)/$(DST).patch
 	@printf "Patch saved to $(TMP_DIR)/$(DST).patch\n"
 
 
 help: ## show this help
-	@printf "Usage: make [target] [VAR=value]\n\n"
-	@printf "Variables:\n"
+	@printf "$(E_BOLD)Usage:$(E_RSET)\n"
+	@printf "  $(E_CMD)make$(E_RSET) [$(E_VAR)VARIABLE$(E_RSET)=value ...] [$(E_FUN)target$(E_RSET) ...]\n"
+	@printf "\n$(E_BOLD)Variables:$(E_RSET)\n"
 	@awk 'BEGIN {comment=""} \
-		/^[a-zA-Z0-9_-]+[[:space:]]*[?]=/ { \
-			split($$0, a, /[[:space:]]*[?]=[[:space:]]*/); \
+		/^[a-zA-Z0-9_-]+[[:space:]]*\?=/ { \
+			split($$0, a, /\?=/); \
+			gsub(/^[ \t]+|[ \t]+$$/, "", a[1]); \
+			gsub(/^[ \t]+|[ \t]+$$/, "", a[2]); \
 			if ( prev ~ /^#/ ) { \
-				printf "  %-14s = %-20s %s\n", a[1], a[2], prev; \
+				gsub(/^[ \t]+|[ \t]+$$/, "", prev); \
+				printf "  $(E_VAR)%-14s$(E_RSET) = %-14s $(E_COM)%s$(E_RSET)\n", a[1], a[2], prev; \
 			} else { \
-				printf "  %-14s = %-20s\n", a[1], a[2]; \
+				printf "  $(E_VAR)%-14s$(E_RSET) = %-14s\n", a[1], a[2]; \
 			} \
 		} \
-		{ prev=$$0 }' $(MAKEFILE_LIST)
-	@printf "\nTargets:\n"
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "  %-14s - %s\n", $$1, $$2}' $(MAKEFILE_LIST)
-	
+		{ prev=$$0 }' \
+		$(MAKEFILE_LIST)
+	@printf "\n$(E_BOLD)Targets:$(E_RSET)\n"
+	@awk 'BEGIN {FS = ":.*?## "} \
+		/^[a-zA-Z0-9_-]+:.*?## / \
+		{printf "  $(E_FUN)%-22s$(E_RSET) - %s\n", $$1, $$2}' \
+		$(MAKEFILE_LIST)
+
+	@printf "\n$(E_BOLD)Examples:$(E_RSET)\n"
+	@printf "  $(E_CMD)make$(E_RSET) $(E_FUN)build-libs$(E_RSET)        $(E_COM)# C и Rust библиотеки$(E_RSET)\n"
+	@printf "  $(E_CMD)make$(E_RSET) $(E_FUN)build-server$(E_RSET)      $(E_COM)# Go-сервер$(E_RSET)\n"
+	@printf "  $(E_CMD)make$(E_RSET) $(E_FUN)build-generator$(E_RSET)   $(E_COM)# Go-генератор$(E_RSET)\n"
+	@printf "  $(E_CMD)make$(E_RSET) $(E_FUN)build$(E_RSET)             $(E_COM)# все$(E_RSET)\n"
+	@printf "  $(E_CMD)make$(E_RSET) $(E_FUN)test$(E_RSET)\n"
+	@printf "  $(E_CMD)make$(E_RSET) $(E_FUN)bench$(E_RSET)\n"
+	@printf "  $(E_CMD)make$(E_RSET) $(E_FUN)clean$(E_RSET)\n"
