@@ -22,8 +22,6 @@ make build
 ./bin/generator
 ```
 
-> Сервер занимает консоль и периодически печатает `sum` и `sub`, поэтому запускайте его в отдельном терминале.
-
 Проверка:
 
 ```sh
@@ -32,7 +30,7 @@ curl -X POST 'http://localhost:8080/calc?num=42'
 curl http://localhost:8080/metrics
 ```
 
-После `make build` артефакты лежат в `./bin`. Перед `make test` и `make bench` нужен `make build-libs` (или `make build`).
+После `make build` артефакты лежат в `./bin`.
 
 Docker Compose - опциональный демонстрационный стенд с Prometheus и Grafana. Конфиги и дашборды - в `monitoring/`.
 
@@ -53,15 +51,16 @@ docker compose up --build -d
   </details>
 
 
-## Сборка
+## Сборка и Makefile
 
 - `make build-libs` - C и Rust библиотеки
 - `make build-server` - Go-сервер
 - `make build-generator` - Go-генератор
 - `make build` - все
-- `make test`, `make bench`
+- `make test`
+- `make bench`
 - `make clean`
-
+- `make help` - справка по командам
 
 ## Конфигурация сервера
 
