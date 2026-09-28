@@ -3,6 +3,8 @@ package operators
 import (
 	"log"
 	"testing"
+
+	"github.com/aaa2ppp/be"
 )
 
 const (
@@ -17,22 +19,73 @@ func init() {
 	}
 }
 
-func BenchmarkAdd(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		_ = Add(1, 2)
+func TestOp(t *testing.T) {
+	tests := []struct {
+		name string
+		op   Op
+		a, b int64
+		want int64
+	}{
+		{
+			"Add",
+			AddOp(),
+			1, 2,
+			3,
+		},
+		{
+			"Sub",
+			SubOp(),
+			1, 2,
+			-1,
+		},
+		{
+			"stub",
+			stubOp(), // (a + b) под капотом
+			1, 2,
+			3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.op.Apply(tt.a, tt.b)
+			be.Equal(t, got, tt.want)
+		})
 	}
 }
 
-func BenchmarkSub(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		_ = Sub(1, 2)
+func BenchmarkOp(b *testing.B) {
+	tests := []struct {
+		name string
+		op   Op
+	}{
+		{
+			"Add C lib",
+			AddOp(),
+		},
+		{
+			"Sub Rust lib",
+			SubOp(),
+		},
+		{
+			"stub",
+			stubOp(),
+		},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				_ = tt.op.Apply(1, 2)
+			}
+		})
 	}
 }
 
 var X int64
 
 //go:noinline
-func add(a, b int64) int64 {
+func workload(a, b int64) int64 {
 	x := a + b
 
 	for i := 0; i < 10000; i++ {
@@ -45,8 +98,9 @@ func add(a, b int64) int64 {
 	return a + b
 }
 
-func BenchmarkGoControlShot(b *testing.B) {
+// для сравнения
+func BenchmarkWorkload_Go(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_ = add(1, 2)
+		_ = workload(1, 2)
 	}
 }
