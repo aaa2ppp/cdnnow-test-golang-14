@@ -4,20 +4,21 @@ import (
 	"context"
 	"log/slog"
 	"net"
-	"net/http"
 	"time"
+
+	"github.com/valyala/fasthttp"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/api"
 )
 
-func runStdHTTPServer(ctx context.Context, listener net.Listener, svc *service) error {
-	router := api.NewStd(api.Config{
+func runFastHTTPServer(ctx context.Context, listener net.Listener, svc *service) error {
+	handler := api.NewFast(api.Config{
 		Service:   svc,
 		AsyncCalc: svc.asyncCalc,
 	})
 
-	server := http.Server{
-		Handler:      router,
+	server := &fasthttp.Server{
+		Handler:      handler,
 		ReadTimeout:  2 * time.Second,
 		WriteTimeout: 2 * time.Second,
 		IdleTimeout:  30 * time.Second,
@@ -32,9 +33,7 @@ func runStdHTTPServer(ctx context.Context, listener net.Listener, svc *service) 
 	select {
 	case <-ctx.Done():
 		slog.Info("shutdown server", "cause", context.Cause(ctx))
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := server.Shutdown(ctx); err != nil {
+		if err := server.Shutdown(); err != nil {
 			return err
 		}
 		return nil

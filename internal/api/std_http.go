@@ -2,7 +2,6 @@ package api
 
 import (
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -12,21 +11,10 @@ import (
 	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
 )
 
-type Service interface {
-	Calculator
-	RequestsCounter
-	MetricsPrinter
-}
-
-type Config struct {
-	Service   Service
-	AsyncCalc bool
-}
-
-func New(cfg Config) *http.ServeMux {
+func NewStd(cfg Config) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.Handle("POST /calc", calcHandler(cfg.Service, cfg.AsyncCalc))
-	mux.Handle("GET /metrics", metricsHandler(cfg.Service))
+	mux.Handle("POST /calc", stdCalcHandler(cfg.Service, cfg.AsyncCalc))
+	mux.Handle("GET /metrics", stdMetricsHandler(cfg.Service))
 
 	pong := func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(okBody) }
 	mux.HandleFunc("GET /ping", pong)
@@ -34,20 +22,7 @@ func New(cfg Config) *http.ServeMux {
 	return mux
 }
 
-type Calculator interface {
-	Calculate(num int64) error
-}
-
-type RequestsCounter interface {
-	CountRequests(kind metrics.RequestKind)
-}
-
-var okBody = []byte("ok")
-
-// TODO: костыль, убрать после admission control. Не трогать без перепроверки. См. TODO.md.git
-const rejectTimeout = 5 * time.Millisecond
-
-func calcHandler(
+func stdCalcHandler(
 	svc interface {
 		Calculator
 		RequestsCounter
@@ -82,7 +57,7 @@ func calcHandler(
 				http.Error(w, "calculator overloaded", http.StatusServiceUnavailable) // 503
 			default:
 				svc.CountRequests(metrics.Failed)
-				log.Printf("calcHandler: calculate: %v", err)
+				log.Printf("stdCalcHandler: calculate: %v", err)
 				http.Error(w, "internal error", 500)
 			}
 			return
@@ -94,23 +69,19 @@ func calcHandler(
 		if _, err = w.Write(okBody); err != nil {
 			// Не считаем в метриках: запрос обслужен, ответ посчитан.
 			// Ошибка Write - это разрыв соединения/клиент ушел, к нашей работе не относится.
-			log.Printf("calcHandler: write response: %v", err)
+			log.Printf("stdCalcHandler: write response: %v", err)
 		}
 	}
 }
 
-type MetricsPrinter interface {
-	PrintMetrics(w io.Writer) error
-}
-
-func metricsHandler(svc MetricsPrinter) http.HandlerFunc {
+func stdMetricsHandler(svc MetricsPrinter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("Expires", "0")
 		if err := svc.PrintMetrics(w); err != nil {
-			log.Printf("metricsHandler: write response: %v", err)
+			log.Printf("stdMetricsHandler: write response: %v", err)
 		}
 	}
 }
