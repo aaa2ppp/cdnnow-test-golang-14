@@ -25,24 +25,36 @@ func TestCalculators(t *testing.T) {
 		newCalc func() Calculator
 	}{
 		{
-			"sync calc",
+			"Sync",
 			func() Calculator {
-				return NewSyncCalculator(nil)
+				return NewSync(nil)
 			},
 		},
 		{
-			"async calc",
+			"Async",
 			func() Calculator {
-				c := NewAsyncCalculator(1024, nil, nil)
-				c.IgnoreOverload()
+				c := NewAsync(0, nil, nil)
 				return c
 			},
 		},
 		{
-			"parallel calc",
+			"Async q10",
 			func() Calculator {
-				c := NewParallelCalculator(1024, nil, nil)
-				c.IgnoreOverload()
+				c := NewAsync(10, nil, nil)
+				return c
+			},
+		},
+		{
+			"Parallel",
+			func() Calculator {
+				c := NewParallel(0, nil, nil)
+				return c
+			},
+		},
+		{
+			"Parallel q10",
+			func() Calculator {
+				c := NewParallel(10, nil, nil)
 				return c
 			},
 		},
@@ -68,41 +80,41 @@ func TestCalculators(t *testing.T) {
 	}
 }
 
-func BenchmarkSyncCalc(b *testing.B) {
-	calc := NewSyncCalculator(nil)
+func BenchmarkSync(b *testing.B) {
+	calc := NewSync(nil)
 	for i := 0; i < b.N; i++ {
 		_ = calc.Calculate(42)
 	}
 }
 
-func BenchmarkAsyncCalc(b *testing.B) {
-	c := NewAsyncCalculator(1024, nil, nil)
-	c.IgnoreOverload()
+func BenchmarkAsync(b *testing.B) {
+	c := NewAsync(1024, nil, nil)
+	c.ignoreOverload = true
 	for i := 0; i < b.N; i++ {
 		_ = c.Calculate(42)
 	}
 	c.Stop()
 }
 
-func BenchmarkSingle(b *testing.B) {
+func BenchmarkAsyncSingle(b *testing.B) {
 	cases := []struct {
-		name   string
-		calcFn CalculateFunc
+		name string
+		op   operators.Op
 	}{
 		{
-			"C calc",
-			operators.Add,
+			"Add C lib",
+			operators.AddOp(),
 		},
 		{
-			"Rust calc",
-			operators.Sub,
+			"Sub Rust lib",
+			operators.SubOp(),
 		},
 	}
 
 	for _, cs := range cases {
 		b.Run(cs.name, func(b *testing.B) {
-			c := newSingleAsyncCalculator(cs.calcFn, 1024, nil, nil)
-			c.IgnoreOverload()
+			c := newAsyncSingle(cs.op, 1024, nil, nil)
+			c.ignoreOverload = true
 			for i := 0; i < b.N; i++ {
 				_ = c.Calculate(42)
 			}
@@ -111,9 +123,11 @@ func BenchmarkSingle(b *testing.B) {
 	}
 }
 
-func BenchmarkParallelCalc(b *testing.B) {
-	c := NewParallelCalculator(1024, nil, nil)
-	c.IgnoreOverload()
+func BenchmarkParallel(b *testing.B) {
+	c := NewParallel(1024, nil, nil)
+	c.sum.ignoreOverload = true
+	c.sub.ignoreOverload = true
+
 	for i := 0; i < b.N; i++ {
 		_ = c.Calculate(42)
 	}
