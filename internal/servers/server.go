@@ -39,6 +39,7 @@ type Config struct {
 }
 
 type service struct {
+	asyncCalc  bool
 	calculator calculators.Calculator
 	counter    *metrics.Aggregator
 	printer    *metrics.Printer
@@ -70,17 +71,21 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer stopPprof()
 
+	var asyncCalc bool
 	switch cfg.CalcMode {
 	case Sync:
+		asyncCalc = false
 		aggregator = metrics.NewAggregator(aggregatorQueueSize, nil, nil)
 		calculator = calculators.NewSync(aggregator.RecordSample)
 
 	case Async:
+		asyncCalc = true
 		pool := pools.NewBatchPool[metrics.Sample](samplesBatchSize)
 		aggregator = metrics.NewAggregator(aggregatorQueueSize, pool, nil)
 		calculator = calculators.NewAsync(cfg.QueueSize, aggregator.RecordSamples, pool)
 
 	case Parallel:
+		asyncCalc = true
 		pool := pools.NewBatchPool[time.Duration](samplesBatchSize)
 		aggregator = metrics.NewAggregator(aggregatorQueueSize, nil, pool)
 		calculator = calculators.NewParallel(cfg.QueueSize, aggregator.RecordDurations, pool)
@@ -102,6 +107,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	svc := &service{
+		asyncCalc:  asyncCalc,
 		calculator: calculator,
 		counter:    aggregator,
 		printer:    metrics.NewPrinter(aggregator),

@@ -68,6 +68,7 @@ func TestAPI(t *testing.T) {
 		name       string
 		request    string
 		newService func() *mockService
+		asyncCalc  bool
 		wantStatus int
 		wantCalls  int
 		wantCounts requestCounts
@@ -76,6 +77,14 @@ func TestAPI(t *testing.T) {
 			name:       "success",
 			request:    "POST /calc?num=42",
 			wantStatus: 200,
+			wantCounts: requestCounts{metrics.Ok: 1},
+			wantCalls:  1,
+		},
+		{
+			name:       "async calc",
+			request:    "POST /calc?num=42",
+			asyncCalc:  true,
+			wantStatus: 202,
 			wantCounts: requestCounts{metrics.Ok: 1},
 			wantCalls:  1,
 		},
@@ -147,7 +156,7 @@ func TestAPI(t *testing.T) {
 				svc = tt.newService()
 			}
 
-			router := New(svc)
+			router := New(Config{Service: svc, AsyncCalc: tt.asyncCalc})
 			server := httptest.NewServer(router)
 
 			method, url, _ := strings.Cut(tt.request, " ")
@@ -240,7 +249,7 @@ func BenchmarkAPI(b *testing.B) {
 				defer calc.Stop()
 			}
 
-			server := httptest.NewServer(calcHandler(calc))
+			server := httptest.NewServer(calcHandler(calc, false))
 
 			templ, _ := http.NewRequest("POST", server.URL+"/calc?num=42", nil)
 			ctx := context.Background()
@@ -313,7 +322,7 @@ func BenchmarkAPIParallel(b *testing.B) {
 				defer calc.Stop()
 			}
 
-			server := httptest.NewServer(calcHandler(calc))
+			server := httptest.NewServer(calcHandler(calc, false))
 
 			templReq, _ := http.NewRequest("POST", server.URL+"/calc?num=42", nil)
 			ctx := context.Background()

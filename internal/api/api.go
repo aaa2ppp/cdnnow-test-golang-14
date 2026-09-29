@@ -1,14 +1,15 @@
 package api
 
 import (
-	"aaa2ppp/cdnnow-test-golang-14/internal/calculators"
-	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
 	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"time"
+
+	"aaa2ppp/cdnnow-test-golang-14/internal/calculators"
+	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
 )
 
 type Service interface {
@@ -17,10 +18,15 @@ type Service interface {
 	MetricsPrinter
 }
 
-func New(svc Service) *http.ServeMux {
+type Config struct {
+	Service   Service
+	AsyncCalc bool
+}
+
+func New(cfg Config) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.Handle("POST /calc", calcHandler(svc))
-	mux.Handle("GET /metrics", metricsHandler(svc))
+	mux.Handle("POST /calc", calcHandler(cfg.Service, cfg.AsyncCalc))
+	mux.Handle("GET /metrics", metricsHandler(cfg.Service))
 
 	pong := func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(okBody) }
 	mux.HandleFunc("GET /ping", pong)
@@ -41,10 +47,18 @@ var okBody = []byte("ok")
 // TODO: костыль, убрать после admission control. Не трогать без перепроверки. См. TODO.md.git
 const rejectTimeout = 5 * time.Millisecond
 
-func calcHandler(svc interface {
-	Calculator
-	RequestsCounter
-}) http.HandlerFunc {
+func calcHandler(
+	svc interface {
+		Calculator
+		RequestsCounter
+	},
+	asyncCalc bool,
+) http.HandlerFunc {
+	statusOk := 200
+	if asyncCalc {
+		statusOk = http.StatusAccepted // 202
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		numStr := r.URL.Query().Get("num")
 		if numStr == "" {
@@ -76,6 +90,7 @@ func calcHandler(svc interface {
 
 		svc.CountRequests(metrics.Ok)
 
+		w.WriteHeader(statusOk)
 		if _, err = w.Write(okBody); err != nil {
 			// Не считаем в метриках: запрос обслужен, ответ посчитан.
 			// Ошибка Write - это разрыв соединения/клиент ушел, к нашей работе не относится.
