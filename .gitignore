@@ -5,6 +5,7 @@
 *.bak[0-9]
 *.tmp
 *.pprof
+*.prof
 *.bin
 *.exe
 *.out
