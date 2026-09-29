@@ -131,12 +131,12 @@ func main() {
 			}
 			w.Run(workCtx, func() error {
 				num := rand.IntN(201) - 100
-				start := time.Now()
-				if err := client.DoRequest(abortCtx, num); err != nil {
+				since, err := client.DoRequest(abortCtx, num)
+				if err != nil {
 					return err
 				}
 				if hist != nil {
-					if err := hist.RecordValue(int64(time.Since(start))); err != nil {
+					if err := hist.RecordValue(int64(since)); err != nil {
 						log.Printf("hist.RecordValue: %v", err)
 					}
 				}
@@ -176,7 +176,7 @@ type Client struct {
 	Timeout    time.Duration
 }
 
-func (c *Client) DoRequest(ctx context.Context, num int) error {
+func (c *Client) DoRequest(ctx context.Context, num int) (time.Duration, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()
 
@@ -184,13 +184,17 @@ func (c *Client) DoRequest(ctx context.Context, num int) error {
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
+	// TODO: Мы хотим знать время ответа сервера, но since — это server time + client time,
+	// причем клиентская часть существенна.
+	start := time.Now()
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
+	since := time.Since(start)
 
 	if resp.StatusCode >= 400 {
 		var b strings.Builder
@@ -198,12 +202,12 @@ func (c *Client) DoRequest(ctx context.Context, num int) error {
 		_ = resp.Body.Close()
 
 		msg := strings.TrimSpace(b.String())
-		return fmt.Errorf("http %d: %s", resp.StatusCode, msg)
+		return 0, fmt.Errorf("http %d: %s", resp.StatusCode, msg)
 	}
 
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	return nil
+	return since, nil
 }
 
 type Worker struct {
