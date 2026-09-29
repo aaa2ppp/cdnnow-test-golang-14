@@ -28,44 +28,55 @@ type Calculator interface {
 	Values() Values
 }
 
+type state struct {
+	addOp operators.Op
+	subOp operators.Op
+	vals  Values
+}
+
+func (c *state) add(num int64) time.Duration {
+	start := time.Now()
+	c.vals.Sum = c.addOp.Apply(c.vals.Sum, num)
+	return time.Since(start)
+}
+
+func (c *state) sub(num int64) time.Duration {
+	start := time.Now()
+	c.vals.Sub = c.subOp.Apply(c.vals.Sub, num)
+	return time.Since(start)
+}
+
+func (c *state) calculate(num int64) metrics.Sample {
+	return metrics.Sample{
+		AddDuration: c.add(num),
+		SubDuration: c.sub(num),
+	}
+}
+
 // Sync выполняет вычисления синхронно.
 // Клиент ждет результата; Sum и Sub согласованы.
 type Sync struct {
-	addOp    operators.Op
-	subOp    operators.Op
+	state
 	recordFn func(metrics.Sample)
 	lock     chan struct{} // FIFO-мьютекс, cap=1
-
-	vals Values
 }
 
 var _ Calculator = &Sync{}
 
 func NewSync(recordFn func(metrics.Sample)) *Sync {
 	return &Sync{
-		addOp:    operators.AddOp(),
-		subOp:    operators.SubOp(),
 		recordFn: recordFn,
 		lock:     make(chan struct{}, 1),
+		state: state{
+			addOp: operators.AddOp(),
+			subOp: operators.SubOp(),
+		},
 	}
 }
 
-func (c *Sync) add(num int64) time.Duration {
-	start := time.Now()
-	c.vals.Sum = c.addOp.Apply(c.vals.Sum, num)
-	return time.Since(start)
-}
-
-func (c *Sync) sub(num int64) time.Duration {
-	start := time.Now()
-	c.vals.Sub = c.subOp.Apply(c.vals.Sub, num)
-	return time.Since(start)
-}
-
-func (c *Sync) calculate(num int64) metrics.Sample {
-	return metrics.Sample{
-		AddDuration: c.add(num),
-		SubDuration: c.sub(num),
+func (c *Sync) record(sample metrics.Sample) {
+	if c.recordFn != nil {
+		c.recordFn(sample)
 	}
 }
 
@@ -73,11 +84,7 @@ func (c *Sync) Calculate(num int64) error {
 	c.lock <- struct{}{}
 	sample := c.calculate(num)
 	<-c.lock
-
-	if c.recordFn != nil {
-		c.recordFn(sample)
-	}
-
+	c.record(sample)
 	return nil
 }
 
@@ -91,17 +98,20 @@ func (c *Sync) Values() Values {
 // Async выполняет вычисления в отдельной горутине.
 // Клиент не ждет; Sum и Sub согласованы.
 type Async struct {
-	addOp     operators.Op
-	subOp     operators.Op
-	vals      Values
-	recordFn  func([]metrics.Sample)
-	pool      *pools.BatchPool[metrics.Sample]
-	batchSize int
-	recDelay  time.Duration
-	numCh     chan int64
-	getValCh  chan Values
-	done      chan struct{}
+	state
 
+	// metrics recorder
+	recordFn    func([]metrics.Sample)
+	recordDelay time.Duration
+	batchPool   *pools.BatchPool[metrics.Sample]
+	batchSize   int
+	batch       []metrics.Sample
+	flushTm     *time.Timer
+
+	// server
+	numCh          chan int64
+	valCh          chan Values
+	done           chan struct{}
 	ignoreOverload bool
 }
 
@@ -111,23 +121,27 @@ var _ Calculator = &Async{}
 func NewAsync(
 	queueSize int,
 	recordFn func([]metrics.Sample),
-	pool *pools.BatchPool[metrics.Sample],
+	batchPool *pools.BatchPool[metrics.Sample],
 
 ) *Async {
 	batchSize := defaultBatchSize
-	if pool != nil {
-		batchSize = pool.BatchSize()
+	if batchPool != nil {
+		batchSize = batchPool.BatchSize()
 	}
 
 	c := Async{
-		addOp:          operators.AddOp(),
-		subOp:          operators.SubOp(),
-		recordFn:       recordFn,
-		pool:           pool,
-		batchSize:      batchSize,
-		recDelay:       defaultRecordingDelay,
+		state: state{
+			addOp: operators.AddOp(),
+			subOp: operators.SubOp(),
+		},
+
+		recordFn:    recordFn,
+		recordDelay: defaultRecordingDelay,
+		batchPool:   batchPool,
+		batchSize:   batchSize,
+
 		numCh:          make(chan int64, queueSize),
-		getValCh:       make(chan Values),
+		valCh:          make(chan Values),
 		done:           make(chan struct{}),
 		ignoreOverload: queueSize == 0,
 	}
@@ -136,78 +150,64 @@ func NewAsync(
 	return &c
 }
 
-func (c *Async) add(num int64) time.Duration {
-	start := time.Now()
-	c.vals.Sum = c.addOp.Apply(c.vals.Sum, num)
-	return time.Since(start)
-}
-
-func (c *Async) sub(num int64) time.Duration {
-	start := time.Now()
-	c.vals.Sub = c.subOp.Apply(c.vals.Sub, num)
-	return time.Since(start)
-}
-
-func (c *Async) calculate(num int64) metrics.Sample {
-	return metrics.Sample{
-		AddDuration: c.add(num),
-		SubDuration: c.sub(num),
-	}
-}
-
 func (c *Async) makeBatch() []metrics.Sample {
-	if c.pool != nil {
-		return c.pool.Get()
+	if c.batchPool != nil {
+		return c.batchPool.Get()
 	}
 	return make([]metrics.Sample, 0, c.batchSize)
 }
 
+func (c *Async) record(sample metrics.Sample) {
+	if c.recordFn == nil {
+		return
+	}
+
+	if c.batch == nil {
+		c.batch = c.makeBatch()
+		c.flushTm.Reset(c.recordDelay)
+	}
+
+	c.batch = append(c.batch, sample)
+	if len(c.batch) >= c.batchSize {
+		c.flush()
+	}
+}
+
+func (c *Async) flush() {
+	if c.recordFn == nil || c.batch == nil {
+		return
+	}
+
+	c.recordFn(c.batch)
+	c.batch = nil
+	c.flushTm.Stop()
+}
+
 func (c *Async) serve() {
 	defer func() {
-		close(c.getValCh)
+		close(c.valCh)
 		close(c.done)
 	}()
 
-	var batch []metrics.Sample
-	defer func() {
-		if c.recordFn != nil && batch != nil {
-			c.recordFn(batch)
-		}
-	}()
+	defer c.flush()
 
-	flushTm := time.NewTimer(time.Hour)
-	flushTm.Stop()
-	defer flushTm.Stop()
+	c.flushTm = time.NewTimer(time.Hour)
+	c.flushTm.Stop()
+	defer c.flushTm.Stop()
 
 	for {
 		select {
-		case <-flushTm.C:
-			c.recordFn(batch)
-			batch = nil
+		case <-c.flushTm.C:
+			c.flush()
 
 		case num, ok := <-c.numCh:
 			if !ok {
 				return
 			}
-
 			sample := c.calculate(num)
+			c.record(sample)
 
-			if c.recordFn != nil {
-				if batch == nil {
-					batch = c.makeBatch()
-					flushTm.Reset(c.recDelay)
-				}
-
-				batch = append(batch, sample)
-
-				if len(batch) >= c.batchSize {
-					c.recordFn(batch)
-					batch = nil
-					flushTm.Stop()
-				}
-			}
-
-		case c.getValCh <- c.vals:
+		case c.valCh <- c.vals:
 		}
 	}
 }
@@ -228,7 +228,7 @@ func (c *Async) Calculate(num int64) error {
 
 // Values возвращает текущие Sum и Sub. После Stop возвращает финальные значения.
 func (c *Async) Values() Values {
-	if vals, ok := <-c.getValCh; ok {
+	if vals, ok := <-c.valCh; ok {
 		return vals
 	}
 	return c.vals
@@ -242,16 +242,22 @@ func (c *Async) Stop() {
 
 // asyncSingle аналогично Async, но только для одной операции.
 type asyncSingle struct {
-	op        operators.Op
-	val       int64
-	record    func([]time.Duration)
-	pool      *pools.BatchPool[time.Duration]
-	batchSize int
-	recDelay  time.Duration
-	numCh     chan int64
-	getValCh  chan int64
-	done      chan struct{}
+	// state
+	op  operators.Op
+	val int64
 
+	// metric recorder
+	recordFn    func([]time.Duration)
+	recordDelay time.Duration
+	batch       []time.Duration
+	batchPool   *pools.BatchPool[time.Duration]
+	batchSize   int
+	flushTm     *time.Timer
+
+	// server
+	numCh          chan int64
+	valCh          chan int64
+	done           chan struct{}
 	ignoreOverload bool
 }
 
@@ -269,14 +275,17 @@ func newAsyncSingle(
 	}
 
 	c := &asyncSingle{
-		op:             op,
-		record:         record,
-		pool:           pool,
-		batchSize:      batchSize,
-		recDelay:       defaultRecordingDelay,
-		numCh:          make(chan int64, queueSize),
-		getValCh:       make(chan int64),
-		done:           make(chan struct{}),
+		op:       op,
+		recordFn: record,
+
+		recordDelay: defaultRecordingDelay,
+		batchPool:   pool,
+		batchSize:   batchSize,
+
+		numCh: make(chan int64, queueSize),
+		valCh: make(chan int64),
+		done:  make(chan struct{}),
+
 		ignoreOverload: queueSize == 0,
 	}
 
@@ -291,58 +300,63 @@ func (c *asyncSingle) calculate(num int64) time.Duration {
 }
 
 func (c *asyncSingle) makeBatch() []time.Duration {
-	if c.pool != nil {
-		return c.pool.Get()
+	if c.batchPool != nil {
+		return c.batchPool.Get()
 	}
 	return make([]time.Duration, 0, c.batchSize)
 }
 
+func (c *asyncSingle) record(sample time.Duration) {
+	if c.recordFn == nil {
+		return
+	}
+
+	if c.batch == nil {
+		c.batch = c.makeBatch()
+		c.flushTm.Reset(c.recordDelay)
+	}
+
+	c.batch = append(c.batch, sample)
+	if len(c.batch) >= c.batchSize {
+		c.flush()
+	}
+}
+
+func (c *asyncSingle) flush() {
+	if c.recordFn == nil || c.batch == nil {
+		return
+	}
+
+	c.recordFn(c.batch)
+	c.batch = nil
+	c.flushTm.Stop()
+}
+
 func (c *asyncSingle) serve() {
 	defer func() {
-		close(c.getValCh)
+		close(c.valCh)
 		close(c.done)
 	}()
 
-	var batch []time.Duration
-	defer func() {
-		if c.record != nil && batch != nil {
-			c.record(batch)
-		}
-	}()
+	defer c.flush()
 
-	flushTm := time.NewTimer(time.Hour)
-	flushTm.Stop()
-	defer flushTm.Stop()
+	c.flushTm = time.NewTimer(time.Hour)
+	c.flushTm.Stop()
+	defer c.flushTm.Stop()
 
 	for {
 		select {
-		case <-flushTm.C:
-			c.record(batch)
-			batch = nil
+		case <-c.flushTm.C:
+			c.flush()
 
 		case num, ok := <-c.numCh:
 			if !ok {
 				return
 			}
+			sample := c.calculate(num)
+			c.record(sample)
 
-			d := c.calculate(num)
-
-			if c.record != nil {
-				if batch == nil {
-					batch = c.makeBatch()
-					flushTm.Reset(c.recDelay)
-				}
-
-				batch = append(batch, d)
-
-				if len(batch) >= c.batchSize {
-					c.record(batch)
-					batch = nil
-					flushTm.Stop()
-				}
-			}
-
-		case c.getValCh <- c.val:
+		case c.valCh <- c.val:
 		}
 	}
 }
@@ -364,7 +378,7 @@ func (c *asyncSingle) Calculate(num int64) error {
 
 // Value возвращает текущее значение. После Stop возвращает финальное значение.
 func (c *asyncSingle) Value() int64 {
-	if val, ok := <-c.getValCh; ok {
+	if val, ok := <-c.valCh; ok {
 		return val
 	}
 	return c.val
