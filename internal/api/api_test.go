@@ -1,20 +1,23 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"io"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/calculators"
 	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
 	"aaa2ppp/cdnnow-test-golang-14/internal/operators"
 
 	"github.com/aaa2ppp/be"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -29,18 +32,18 @@ func init() {
 	}
 }
 
-type requestCounts map[metrics.RequestKind]int
+type metricMap map[metrics.RequestKind]int
 
 type mockService struct {
-	calls  int
-	counts requestCounts
-
-	calculateFunc    func(int64) error
-	printMetricsFunc func(io.Writer) error
+	metrics           metricMap
+	calculateFunc     func(int64) error
+	calculateCalls    int
+	printMetricsFunc  func(io.Writer) error
+	printMetricsCalls int
 }
 
 func (s *mockService) Calculate(num int64) error {
-	s.calls++
+	s.calculateCalls++
 	if s.calculateFunc != nil {
 		return s.calculateFunc(num)
 	}
@@ -48,7 +51,7 @@ func (s *mockService) Calculate(num int64) error {
 }
 
 func (s *mockService) PrintMetrics(w io.Writer) error {
-	s.calls++
+	s.printMetricsCalls++
 	if s.printMetricsFunc != nil {
 		return s.printMetricsFunc(w)
 	}
@@ -56,37 +59,42 @@ func (s *mockService) PrintMetrics(w io.Writer) error {
 }
 
 func (s *mockService) CountRequests(kind metrics.RequestKind) {
-	if s.counts == nil {
-		s.counts = requestCounts{}
+	if s.metrics == nil {
+		s.metrics = metricMap{}
 	}
-	s.counts[kind]++
+	s.metrics[kind]++
 }
 
 func TestAPI(t *testing.T) {
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(t.Output(), nil)))
+
 	// NOTE: метрики считаются только на ручке `POST /calc`
+
 	tests := []struct {
-		name       string
-		request    string
-		newService func() *mockService
-		asyncCalc  bool
-		wantStatus int
-		wantCalls  int
-		wantCounts requestCounts
+		name                  string
+		request               string
+		newService            func() *mockService
+		asyncCalc             bool
+		wantStatus            int
+		wantCalculateCalls    int
+		wantPrintMetricsCalls int
+		wantMetrics           metricMap
 	}{
 		{
-			name:       "success",
-			request:    "POST /calc?num=42",
-			wantStatus: 200,
-			wantCounts: requestCounts{metrics.Ok: 1},
-			wantCalls:  1,
+			name:               "success",
+			request:            "POST /calc?num=42",
+			wantStatus:         200,
+			wantMetrics:        metricMap{metrics.Ok: 1},
+			wantCalculateCalls: 1,
 		},
 		{
-			name:       "async calc",
-			request:    "POST /calc?num=42",
-			asyncCalc:  true,
-			wantStatus: 202,
-			wantCounts: requestCounts{metrics.Ok: 1},
-			wantCalls:  1,
+			name:               "async calc",
+			request:            "POST /calc?num=42",
+			asyncCalc:          true,
+			wantStatus:         202,
+			wantMetrics:        metricMap{metrics.Ok: 1},
+			wantCalculateCalls: 1,
 		},
 		{
 			name:       "unknown method",
@@ -99,16 +107,16 @@ func TestAPI(t *testing.T) {
 			wantStatus: 404,
 		},
 		{
-			name:       "missing num",
-			request:    "POST /calc",
-			wantCounts: requestCounts{metrics.BadRequest: 1},
-			wantStatus: 400,
+			name:        "missing num",
+			request:     "POST /calc",
+			wantMetrics: metricMap{metrics.BadRequest: 1},
+			wantStatus:  400,
 		},
 		{
-			name:       "bad num",
-			request:    "POST /calc?num=abc",
-			wantCounts: requestCounts{metrics.BadRequest: 1},
-			wantStatus: 400,
+			name:        "bad num",
+			request:     "POST /calc?num=abc",
+			wantMetrics: metricMap{metrics.BadRequest: 1},
+			wantStatus:  400,
 		},
 		{
 			name:    "overloaded",
@@ -118,9 +126,9 @@ func TestAPI(t *testing.T) {
 					calculateFunc: func(int64) error { return calculators.ErrOverloaded },
 				}
 			},
-			wantCalls:  1,
-			wantCounts: requestCounts{metrics.Overload: 1},
-			wantStatus: 503,
+			wantCalculateCalls: 1,
+			wantMetrics:        metricMap{metrics.Overload: 1},
+			wantStatus:         503,
 		},
 		{
 			name:    "unknown error",
@@ -130,15 +138,15 @@ func TestAPI(t *testing.T) {
 					calculateFunc: func(int64) error { return errors.New("unknown error") },
 				}
 			},
-			wantCalls:  1,
-			wantCounts: requestCounts{metrics.Failed: 1},
-			wantStatus: 500,
+			wantCalculateCalls: 1,
+			wantMetrics:        metricMap{metrics.Failed: 1},
+			wantStatus:         500,
 		},
 		{
-			name:       "metrics",
-			request:    "GET /metrics",
-			wantCalls:  1,
-			wantStatus: 200,
+			name:                  "metrics",
+			request:               "GET /metrics",
+			wantPrintMetricsCalls: 1,
+			wantStatus:            200,
 		},
 		{
 			name:       "ping",
@@ -147,36 +155,55 @@ func TestAPI(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var svc *mockService
-			if tt.newService == nil {
-				svc = &mockService{}
-			} else {
-				svc = tt.newService()
+	servers := []struct {
+		name  string
+		start func(t *testing.T, cfg Config) *testServer
+	}{
+		{
+			"std",
+			func(t *testing.T, cfg Config) *testServer { return startStdServer(t, NewStd(cfg)) },
+		},
+		{
+			"fast",
+			func(t *testing.T, cfg Config) *testServer { return startFastServer(t, NewFast(cfg)) },
+		},
+	}
+
+	for _, svr := range servers {
+		t.Run(svr.name, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					var svc *mockService
+					if tt.newService == nil {
+						svc = &mockService{}
+					} else {
+						svc = tt.newService()
+					}
+
+					server := svr.start(t, Config{Service: svc, AsyncCalc: tt.asyncCalc})
+					defer server.Close()
+
+					method, url, _ := strings.Cut(tt.request, " ")
+					url = server.URL + url
+					req, err := http.NewRequest(method, url, nil)
+					be.Err(t, err, nil)
+
+					client := http.DefaultClient
+					resp, err := client.Do(req)
+					be.Err(t, err, nil)
+					be.Equal(t, resp.StatusCode, tt.wantStatus)
+
+					_, err = io.Copy(io.Discard, resp.Body)
+					be.Err(t, err, nil)
+
+					err = resp.Body.Close()
+					be.Err(t, err, nil)
+
+					be.Equal(t, svc.calculateCalls, tt.wantCalculateCalls)
+					be.Equal(t, svc.printMetricsCalls, tt.wantPrintMetricsCalls)
+					be.Equal(t, svc.metrics, tt.wantMetrics)
+				})
 			}
-
-			router := NewStd(Config{Service: svc, AsyncCalc: tt.asyncCalc})
-			server := httptest.NewServer(router)
-
-			method, url, _ := strings.Cut(tt.request, " ")
-			url = server.URL + url
-			req, err := http.NewRequest(method, url, nil)
-			be.Err(t, err, nil)
-
-			client := http.DefaultClient
-			resp, err := client.Do(req)
-			be.Err(t, err, nil)
-			be.Equal(t, resp.StatusCode, tt.wantStatus)
-
-			_, err = io.Copy(io.Discard, resp.Body)
-			be.Err(t, err, nil)
-
-			err = resp.Body.Close()
-			be.Err(t, err, nil)
-
-			be.Equal(t, svc.calls, tt.wantCalls)
-			be.Equal(t, svc.counts, tt.wantCounts)
 		})
 	}
 }
@@ -194,156 +221,240 @@ func (c *mockCalcService) Calculate(num int64) error {
 
 func (c *mockCalcService) CountRequests(metrics.RequestKind) {}
 
-func BenchmarkAPI(b *testing.B) {
-	type service interface {
-		Calculator
-		RequestsCounter
+func (c *mockCalcService) Stop() {
+	if calc, ok := c.Calculator.(interface{ Stop() }); ok {
+		calc.Stop()
 	}
+}
 
-	cases := []struct {
-		name    string
-		newCalc func() service
-	}{
+type calcCase struct {
+	name      string
+	newCalc   func() *mockCalcService
+	asyncCalc bool
+}
+
+func calcCases() []calcCase {
+	return []calcCase{
 		{
 			"stub calc",
-			func() service {
+			func() *mockCalcService {
 				return &mockCalcService{}
 			},
+			false,
 		},
 		{
 			"sync calc",
-			func() service {
+			func() *mockCalcService {
 				return &mockCalcService{
 					Calculator: calculators.NewSync(nil),
 				}
 			},
+			false,
 		},
 		{
 			"async calc",
-			func() service {
+			func() *mockCalcService {
 				c := calculators.NewAsync(1024, nil, nil)
 				c.IgnoreOverload()
 				return &mockCalcService{
 					Calculator: c,
 				}
 			},
+			true,
 		},
 		{
 			"parallel calc",
-			func() service {
+			func() *mockCalcService {
 				c := calculators.NewParallel(1024, nil, nil)
 				c.IgnoreOverload()
 				return &mockCalcService{
 					Calculator: c,
 				}
 			},
+			true,
 		},
 	}
+}
 
-	type stopper interface{ Stop() }
+type serverCase struct {
+	name  string
+	start func(b *testing.B, calc *mockCalcService, asyncCalc bool) *testServer
+}
 
-	for _, cs := range cases {
-		b.Run(cs.name, func(b *testing.B) {
-			calc := cs.newCalc()
-			if calc, ok := calc.(stopper); ok {
-				defer calc.Stop()
-			}
+func serverCases() []serverCase {
+	return []serverCase{
+		{
+			"std",
+			func(b *testing.B, calc *mockCalcService, asyncCalc bool) *testServer {
+				return startStdServer(b, stdCalcHandler(calc, asyncCalc))
+			},
+		},
+		{
+			"fast",
+			func(b *testing.B, calc *mockCalcService, asyncCalc bool) *testServer {
+				return startFastServer(b, fastCalcHandler(calc, asyncCalc))
+			},
+		},
+	}
+}
 
-			server := httptest.NewServer(stdCalcHandler(calc, false))
+func BenchmarkAPI(b *testing.B) {
+	for _, svr := range serverCases() {
+		b.Run(svr.name, func(b *testing.B) {
+			for _, cs := range calcCases() {
+				func() {
+					calc := cs.newCalc()
+					defer calc.Stop()
 
-			templ, _ := http.NewRequest("POST", server.URL+"/calc?num=42", nil)
-			ctx := context.Background()
+					server := svr.start(b, calc, cs.asyncCalc)
+					defer server.Close()
 
-			client := http.DefaultClient
+					client := &fasthttp.Client{
+						MaxConnsPerHost:           1,
+						MaxIdemponentCallAttempts: 1,
+						ReadTimeout:               5 * time.Second,
+						WriteTimeout:              5 * time.Second,
+					}
 
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				req := templ.Clone(ctx)
-				resp, _ := client.Do(req)
-				_, _ = io.Copy(io.Discard, resp.Body)
-				_ = resp.Body.Close()
+					req := fasthttp.AcquireRequest()
+					defer fasthttp.ReleaseRequest(req)
+
+					resp := fasthttp.AcquireResponse()
+					defer fasthttp.ReleaseResponse(resp)
+
+					req.SetRequestURI(server.URL + "/calc?num=42")
+					req.Header.SetMethod("POST")
+
+					b.Run(cs.name, func(b *testing.B) {
+						for i := 0; i < b.N; i++ {
+							err := client.Do(req, resp)
+							if err != nil {
+								b.Fatalf("Ошибка запроса: %v", err)
+							}
+
+							if !isOK(resp.StatusCode()) {
+								b.Fatalf("Ожидался статус 2xx, получен %d", resp.StatusCode())
+							}
+						}
+					})
+				}()
 			}
 		})
 	}
 }
 
 func BenchmarkAPIParallel(b *testing.B) {
-	type service interface {
-		Calculator
-		RequestsCounter
-	}
+	for _, svr := range serverCases() {
+		b.Run(svr.name, func(b *testing.B) {
+			for _, cs := range calcCases() {
+				func() {
+					calc := cs.newCalc()
+					defer calc.Stop()
 
-	cases := []struct {
-		name    string
-		newCalc func() service
-	}{
-		{
-			"stub calc",
-			func() service {
-				return &mockCalcService{}
-			},
-		},
-		{
-			"sync calc",
-			func() service {
-				return &mockCalcService{
-					Calculator: calculators.NewSync(nil),
-				}
-			},
-		},
-		{
-			"async calc",
-			func() service {
-				c := calculators.NewAsync(1024, nil, nil)
-				c.IgnoreOverload()
-				return &mockCalcService{
-					Calculator: c,
-				}
-			},
-		},
-		{
-			"parallel calc",
-			func() service {
-				c := calculators.NewParallel(1024, nil, nil)
-				c.IgnoreOverload()
-				return &mockCalcService{
-					Calculator: c,
-				}
-			},
-		},
-	}
+					server := svr.start(b, calc, cs.asyncCalc)
+					defer server.Close()
 
-	type stopper interface{ Stop() }
+					var failed atomic.Bool
 
-	for _, cs := range cases {
-		b.Run(cs.name, func(b *testing.B) {
-			calc := cs.newCalc()
-			if calc, ok := calc.(stopper); ok {
-				defer calc.Stop()
+					b.Run(cs.name, func(b *testing.B) {
+						b.RunParallel(func(pb *testing.PB) {
+							client := &fasthttp.Client{
+								MaxConnsPerHost:           1,
+								MaxIdemponentCallAttempts: 1,
+								ReadTimeout:               5 * time.Second,
+								WriteTimeout:              5 * time.Second,
+							}
+
+							req := fasthttp.AcquireRequest()
+							defer fasthttp.ReleaseRequest(req)
+
+							resp := fasthttp.AcquireResponse()
+							defer fasthttp.ReleaseResponse(resp)
+
+							req.SetRequestURI(server.URL + "/calc?num=42")
+							req.Header.SetMethod("POST")
+
+							for pb.Next() {
+								if failed.Load() {
+									return
+								}
+
+								err := client.Do(req, resp)
+								if err != nil {
+									failed.Store(true)
+									b.Errorf("Ошибка запроса: %v", err)
+									return
+								}
+
+								if !isOK(resp.StatusCode()) {
+									failed.Store(true)
+									b.Errorf("Ожидался статус 2xx, получен %d", resp.StatusCode())
+									return
+								}
+							}
+						})
+					})
+				}()
 			}
-
-			server := httptest.NewServer(stdCalcHandler(calc, false))
-
-			templReq, _ := http.NewRequest("POST", server.URL+"/calc?num=42", nil)
-			ctx := context.Background()
-
-			client := &http.Client{
-				Transport: &http.Transport{
-					MaxIdleConns:        100,
-					MaxIdleConnsPerHost: 100,
-					MaxConnsPerHost:     100,
-				},
-			}
-
-			b.ResetTimer()
-			b.RunParallel(func(pb *testing.PB) {
-				for pb.Next() {
-					req := templReq.Clone(ctx)
-					resp, _ := client.Do(req)
-					_, _ = io.Copy(io.Discard, resp.Body)
-					_ = resp.Body.Close()
-				}
-			})
 		})
+	}
+}
+
+func isOK(code int) bool {
+	return code/100*100 == http.StatusOK
+}
+
+type testServer struct {
+	URL   string
+	Close func()
+}
+
+func startStdServer(t testing.TB, handler http.Handler) *testServer {
+	t.Helper()
+
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	be.Err(t, err, nil)
+	url := "http://" + listener.Addr().String()
+
+	server := &http.Server{
+		Handler: handler,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+			t.Errorf("server.Serve: %v", err)
+		}
+	}()
+
+	return &testServer{
+		URL:   url,
+		Close: func() { _ = server.Close(); <-done },
+	}
+}
+
+func startFastServer(t testing.TB, handler fasthttp.RequestHandler) *testServer {
+	t.Helper()
+
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	be.Err(t, err, nil)
+	url := "http://" + listener.Addr().String()
+
+	server := &fasthttp.Server{
+		Handler: handler,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := server.Serve(listener); err != nil {
+			t.Errorf("server.Serve: %v", err)
+		}
+	}()
+
+	return &testServer{
+		URL:   url,
+		Close: func() { _ = listener.Close(); <-done },
 	}
 }

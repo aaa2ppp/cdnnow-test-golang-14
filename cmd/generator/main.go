@@ -1,24 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"math/rand/v2"
-	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
+	"github.com/valyala/fasthttp"
 )
 
 const histMinValue = 10 * time.Microsecond
@@ -83,18 +82,6 @@ func main() {
 		usage("timeout must be positive")
 	}
 
-	client := &Client{
-		HTTPClient: &http.Client{
-			Transport: &http.Transport{
-				DisableKeepAlives:   noKeepAlive,
-				MaxIdleConns:        threads,
-				MaxIdleConnsPerHost: threads,
-				MaxConnsPerHost:     threads,
-			}},
-		BaseURL: url,
-		Timeout: timeout,
-	}
-
 	abortCtx, abort := context.WithCancel(context.Background())
 	defer abort()
 
@@ -129,10 +116,14 @@ func main() {
 				ErrWindow: 2 * time.Second,
 				Jitter:    jitter,
 			}
+			c := NewSingleThreadClient(url, timeout)
 			w.Run(workCtx, func() error {
 				num := rand.IntN(201) - 100
-				since, err := client.DoRequest(abortCtx, num)
+				since, err := c.DoRequest(num)
 				if err != nil {
+					return err
+				}
+				if err := abortCtx.Err(); err != nil {
 					return err
 				}
 				if hist != nil {
@@ -153,7 +144,17 @@ func main() {
 	tm := time.AfterFunc(2*time.Second, abort)
 	defer tm.Stop()
 
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-abortCtx.Done():
+	}
+
 	_, _ = fmt.Printf("\nTotal requests: ok=%d errors=%d\n", stats.Ok.Load(), stats.Errors.Load())
 
 	if percentiles {
@@ -170,43 +171,53 @@ func main() {
 	}
 }
 
-type Client struct {
-	HTTPClient *http.Client
-	BaseURL    string
-	Timeout    time.Duration
+type SingleThreadClient struct {
+	client  *fasthttp.Client
+	baseURL string
+	req     *fasthttp.Request
+	resp    *fasthttp.Response
 }
 
-func (c *Client) DoRequest(ctx context.Context, num int) (time.Duration, error) {
-	ctx, cancel := context.WithTimeout(ctx, c.Timeout)
-	defer cancel()
-
-	url := c.BaseURL + "?num=" + strconv.Itoa(num)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
-	if err != nil {
-		return 0, err
+func NewSingleThreadClient(baseURL string, timeout time.Duration) *SingleThreadClient {
+	client := &fasthttp.Client{
+		MaxConnsPerHost:           1,
+		MaxIdemponentCallAttempts: 1,
+		ReadTimeout:               timeout,
+		WriteTimeout:              timeout,
 	}
+
+	req := fasthttp.AcquireRequest()
+	req.Header.SetMethod("POST")
+
+	return &SingleThreadClient{
+		client:  client,
+		baseURL: baseURL,
+		req:     req,
+		resp:    fasthttp.AcquireResponse(),
+	}
+}
+
+func isOK(status int) bool {
+	return status/100*100 == 200
+}
+
+func (c *SingleThreadClient) DoRequest(num int) (time.Duration, error) {
+	c.req.SetRequestURI(c.baseURL + "?num=" + strconv.Itoa(num))
 
 	// TODO: Мы хотим знать время ответа сервера, но since — это server time + client time,
 	// причем клиентская часть существенна.
 	start := time.Now()
-	resp, err := c.HTTPClient.Do(req)
+	err := c.client.Do(c.req, c.resp)
 	if err != nil {
 		return 0, err
 	}
 	since := time.Since(start)
 
-	if resp.StatusCode >= 400 {
-		var b strings.Builder
-		_, _ = io.Copy(&b, resp.Body)
-		_ = resp.Body.Close()
-
-		msg := strings.TrimSpace(b.String())
-		return 0, fmt.Errorf("http %d: %s", resp.StatusCode, msg)
+	if status := c.resp.StatusCode(); !isOK(status) {
+		msg := bytes.TrimSpace(c.resp.Body())
+		return 0, fmt.Errorf("http %d: %s", status, msg)
 	}
 
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
 	return since, nil
 }
 
