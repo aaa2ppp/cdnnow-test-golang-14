@@ -18,10 +18,11 @@ func runFastHTTPServer(ctx context.Context, listener net.Listener, svc *service)
 	})
 
 	server := &fasthttp.Server{
-		Handler:      handler,
-		ReadTimeout:  2 * time.Second,
-		WriteTimeout: 2 * time.Second,
-		IdleTimeout:  30 * time.Second,
+		Handler:               handler,
+		ReadTimeout:           2 * time.Second,
+		WriteTimeout:          2 * time.Second,
+		IdleTimeout:           30 * time.Second,
+		SecureErrorLogMessage: true,
 	}
 
 	done := make(chan error, 1)
