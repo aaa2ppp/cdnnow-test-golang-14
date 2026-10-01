@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -20,7 +22,7 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-const histMinValue = 10 * time.Microsecond
+const histMinValue = 1 * time.Microsecond
 const histMaxValue = 100 * time.Millisecond
 
 func usage(msg string) {
@@ -37,7 +39,7 @@ type Statistics struct {
 
 func main() {
 	var (
-		url         string
+		baseURL     string
 		threads     int
 		intervalSec float64
 		timeoutSec  float64
@@ -46,7 +48,7 @@ func main() {
 		duration    time.Duration
 		jitter      time.Duration
 	)
-	flag.StringVar(&url, "url", "http://localhost:8080/calc", "calculator endpoint")
+	flag.StringVar(&baseURL, "url", "http://localhost:8080/calc", "calculator endpoint")
 	flag.IntVar(&threads, "n", 10, "alias for threads")
 	flag.IntVar(&threads, "threads", 10, "number of worker threads")
 	flag.Float64Var(&intervalSec, "interval", 0.1, "pause between requests per thread, in seconds (0 = as fast as possible)")
@@ -82,48 +84,51 @@ func main() {
 		usage("timeout must be positive")
 	}
 
-	abortCtx, abort := context.WithCancel(context.Background())
-	defer abort()
-
-	workCtx, stop := signal.NotifyContext(abortCtx, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	newBaseURL, host, err := prepareURL(baseURL)
+	if err != nil {
+		log.Fatalf("can't prepare %s: %v", baseURL, err)
+	}
+
 	if duration > 0 {
-		ctx, cancel := context.WithTimeout(workCtx, duration)
+		ttCtx, cancel := context.WithTimeout(ctx, duration)
 		defer cancel()
-		workCtx = ctx
+		ctx = ttCtx
 	}
 
 	stats := &Statistics{}
-	hists := make([]*hdrhistogram.Histogram, threads)
 
-	var wg sync.WaitGroup
-	wg.Add(threads)
+	done := make(chan *hdrhistogram.Histogram, threads)
+	for i := 0; i < threads; i++ {
+		go func(id int) {
+			var hist *hdrhistogram.Histogram
+			defer func() { done <- hist }()
 
-	for i := range threads {
-		if percentiles {
-			hists[i] = hdrhistogram.New(int64(histMinValue), int64(histMaxValue), 3)
-		}
-	}
+			if percentiles {
+				hist = hdrhistogram.New(int64(histMinValue), int64(histMaxValue), 3)
+			}
 
-	for i := range threads {
-		go func(id int, hist *hdrhistogram.Histogram) {
-			defer wg.Done()
-			w := Worker{
+			client := NewSingleThreadClient(newBaseURL, host, timeout, noKeepAlive)
+
+			worker := &Worker{
 				ID:        id,
 				Interval:  interval,
 				Stats:     stats,
 				ErrWindow: 2 * time.Second,
-				Jitter:    jitter,
 			}
-			c := NewSingleThreadClient(url, timeout)
-			w.Run(workCtx, func() error {
-				num := rand.IntN(201) - 100
-				since, err := c.DoRequest(num)
-				if err != nil {
-					return err
+
+			if jitter > 0 {
+				if err := randomSleep(ctx, jitter); err != nil {
+					return
 				}
-				if err := abortCtx.Err(); err != nil {
+			}
+
+			worker.Run(ctx, func() error {
+				num := rand.IntN(201) - 100
+				since, err := client.DoRequest(num)
+				if err != nil {
 					return err
 				}
 				if hist != nil {
@@ -133,52 +138,114 @@ func main() {
 				}
 				return nil
 			})
-		}(i+1, hists[i])
+		}(i + 1)
 	}
 
-	log.Printf("Generator started: %d threads -> %s", threads, url)
+	log.Printf("Generator started: %d threads -> %s", threads, newBaseURL)
 
-	<-workCtx.Done()
-	log.Printf("Shutdown: %v, stopping generator...", context.Cause(workCtx))
+	<-ctx.Done()
+	log.Printf("Shutdown: %v, stopping generator...", context.Cause(ctx))
 
-	tm := time.AfterFunc(2*time.Second, abort)
+	tm := time.NewTimer(2 * time.Second)
 	defer tm.Stop()
 
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
+	var mergedHist *hdrhistogram.Histogram
+	var dropped int64
+	skipped := threads
 
-	select {
-	case <-done:
-	case <-abortCtx.Done():
+waitLoop:
+	for ; skipped > 0; skipped-- {
+		select {
+		case <-tm.C:
+			break waitLoop
+		case hist := <-done:
+			if mergedHist == nil {
+				mergedHist = hist
+			} else {
+				dropped += mergedHist.Merge(hist)
+			}
+		}
 	}
 
 	_, _ = fmt.Printf("\nTotal requests: ok=%d errors=%d\n", stats.Ok.Load(), stats.Errors.Load())
 
 	if percentiles {
-		hist := hists[0]
-		var dropped int64
-		for _, from := range hists[1:] {
-			dropped += hist.Merge(from)
+		if skipped > 0 {
+			log.Printf("skipped %d worker histograms", skipped)
 		}
 		if dropped > 0 {
 			log.Printf("hist.Merge: total dropped %d values", dropped)
 		}
-		_, _ = fmt.Println()
-		_, _ = hist.PercentilesPrint(os.Stdout, 1, float64(time.Microsecond))
+		if mergedHist != nil {
+			_, _ = fmt.Println()
+			_, _ = mergedHist.PercentilesPrint(os.Stdout, 1, float64(time.Microsecond))
+		}
+	}
+}
+
+func prepareURL(baseURL string) (newBase, host string, err error) {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", "", err
+	}
+
+	var newU url.URL
+
+	scheme := u.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme != "http" {
+		return "", "", errors.New("scheme must be 'http'")
+	}
+	newU.Scheme = scheme
+
+	host = u.Host
+	hostname := u.Hostname()
+	port := u.Port()
+
+	ip := net.ParseIP(hostname)
+	if ip == nil {
+		ipAddr, err := net.ResolveIPAddr("ip", hostname)
+		if err != nil {
+			return "", "", err
+		}
+		ip = ipAddr.IP
+	}
+
+	if port != "" {
+		newU.Host = net.JoinHostPort(ip.String(), port)
+	} else {
+		newU.Host = ip.String()
+	}
+
+	query := u.Query()
+	query.Del("num")
+	newU.RawQuery = query.Encode()
+
+	return newU.String(), host, nil
+}
+
+func randomSleep(ctx context.Context, d time.Duration) error {
+	d = time.Duration(rand.Int64N(int64(d)))
+	tm := time.NewTimer(d)
+	select {
+	case <-ctx.Done():
+		tm.Stop()
+		return ctx.Err()
+	case <-tm.C:
+		return nil
 	}
 }
 
 type SingleThreadClient struct {
-	client  *fasthttp.Client
-	baseURL string
-	req     *fasthttp.Request
-	resp    *fasthttp.Response
+	client *fasthttp.Client
+	uriBuf []byte
+	req    *fasthttp.Request
+	resp   *fasthttp.Response
 }
 
-func NewSingleThreadClient(baseURL string, timeout time.Duration) *SingleThreadClient {
+func NewSingleThreadClient(baseURL string, host string, timeout time.Duration, noKeepAlive bool) *SingleThreadClient {
 	client := &fasthttp.Client{
 		MaxConnsPerHost:           1,
 		MaxIdemponentCallAttempts: 1,
@@ -188,12 +255,26 @@ func NewSingleThreadClient(baseURL string, timeout time.Duration) *SingleThreadC
 
 	req := fasthttp.AcquireRequest()
 	req.Header.SetMethod("POST")
+	if host != "" {
+		req.Header.SetHost(host)
+	}
+	if noKeepAlive {
+		req.Header.SetConnectionClose()
+	}
+
+	uriBuf := make([]byte, 0, len(baseURL)+32) // "?num=<int>" -> 5 + 20
+	uriBuf = append(uriBuf, baseURL...)
+	if strings.Contains(baseURL, "?") {
+		uriBuf = append(uriBuf, "&num="...)
+	} else {
+		uriBuf = append(uriBuf, "?num="...)
+	}
 
 	return &SingleThreadClient{
-		client:  client,
-		baseURL: baseURL,
-		req:     req,
-		resp:    fasthttp.AcquireResponse(),
+		client: client,
+		uriBuf: uriBuf,
+		req:    req,
+		resp:   fasthttp.AcquireResponse(),
 	}
 }
 
@@ -202,10 +283,11 @@ func isOK(status int) bool {
 }
 
 func (c *SingleThreadClient) DoRequest(num int) (time.Duration, error) {
-	c.req.SetRequestURI(c.baseURL + "?num=" + strconv.Itoa(num))
+	uri := strconv.AppendInt(c.uriBuf, int64(num), 10)
+	c.req.SetRequestURIBytes(uri)
 
-	// TODO: Мы хотим знать время ответа сервера, но since — это server time + client time,
-	// причем клиентская часть существенна.
+	// Мы хотим знать время ответа сервера, но since - это server time + client time.
+	// Mаксимально сокращаем долю клиента.
 	start := time.Now()
 	err := c.client.Do(c.req, c.resp)
 	if err != nil {
@@ -228,23 +310,11 @@ type Worker struct {
 
 	ErrWindow time.Duration
 	lastErrs  map[string]errorCount
-	Jitter    time.Duration
 }
 
 func (w *Worker) Run(ctx context.Context, work func() error) {
-	var tm *time.Timer
-	if w.Jitter <= 0 {
-		tm = time.NewTimer(time.Hour)
-		tm.Stop()
-	} else {
-		jitter := time.Duration(rand.Int64N(int64(w.Jitter)))
-		tm = time.NewTimer(jitter)
-		select {
-		case <-ctx.Done():
-			return
-		case <-tm.C:
-		}
-	}
+	tm := time.NewTimer(time.Hour)
+	tm.Stop()
 	defer tm.Stop()
 
 	w.lastErrs = make(map[string]errorCount)
@@ -252,11 +322,8 @@ func (w *Worker) Run(ctx context.Context, work func() error) {
 
 	flushTime := time.Now().Add(time.Second)
 
-	for ctx.Err() == nil {
+	for ctx.Err() == nil { // на случай, если interval=0
 		if err := work(); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return
-			}
 			w.Stats.Errors.Add(1)
 			w.logErr(err)
 		} else {
