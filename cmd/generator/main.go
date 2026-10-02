@@ -1,35 +1,26 @@
 package main
 
 import (
-	"bytes"
+	"aaa2ppp/cdnnow-test-golang-14/internal/generator/clients"
+	"aaa2ppp/cdnnow-test-golang-14/internal/generator/workers"
 	"context"
-	"crypto/tls"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"math/rand/v2"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
-	"runtime"
-	"strconv"
-	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
-	"github.com/valyala/fasthttp"
 )
 
 // TODO: main.go распух. Пора резать на файлы/пакеты
 
-const histMinValue = 1 * time.Microsecond
-const histMaxValue = 100 * time.Millisecond
+const shutdownTimeout = 2 * time.Second
 
 func usage(msg string) {
 	out := flag.CommandLine.Output()
@@ -38,11 +29,12 @@ func usage(msg string) {
 	os.Exit(1)
 }
 
-// TODO: обойтись без атомиков. Каждый воркер ведет свою статистику.
-// Собрать в финале, аналогично гистограммам.
-type Statistics struct {
-	Ok     atomic.Uint64
-	Errors atomic.Uint64
+type Stat struct {
+	Skipped int
+	Ok      int64
+	Errors  int64
+	Hist    *hdrhistogram.Histogram
+	Dropped int64
 }
 
 func main() {
@@ -62,45 +54,41 @@ func main() {
 	flag.Float64Var(&intervalSec, "interval", 0.1, "pause between requests per thread, in seconds (0 = as fast as possible)")
 	flag.Float64Var(&timeoutSec, "timeout", 5.0, "HTTP request timeout, seconds")
 	flag.BoolVar(&noKeepAlive, "no-keep-alive", false, "new connection will be created for each request")
-	flag.BoolVar(&percentiles, "p", false, "alias for percentiles")
-	flag.BoolVar(&percentiles, "percentiles", false, "calculate percentiles")
-	flag.DurationVar(&duration, "d", 0, "alias for duration")
-	flag.DurationVar(&duration, "duration", 0, "total duration of the load test, e.g., 10m, 1h (default 0 - unlimited)")
-	flag.DurationVar(&jitter, "j", 0, "alias for jitter")
-	flag.DurationVar(&jitter, "jitter", 0, "maximum random delay at the start of the worker, e.g., 100ms, 1s")
+	flag.BoolVar(&percentiles, "p", false, "show latency percentiles")
+	flag.DurationVar(&duration, "d", 0, "total duration of the load test, e.g., 10m, 1h (default 0 - unlimited)")
+	flag.DurationVar(&jitter, "j", 0, "maximum random delay at the start of the worker, e.g., 100ms, 1s")
 	flag.Parse()
 
 	if threads <= 0 {
-		usage("threads must be positive")
+		usage("threads must be > 0")
 	}
-
 	if duration < 0 {
-		usage("duration cannot be negative")
+		usage("duration must be >= 0")
 	}
-
 	if jitter < 0 {
-		usage("jitter cannot be negative")
+		usage("jitter must be >= 0")
 	}
 
-	interval := time.Duration(intervalSec * float64(time.Second))
-	if interval < 0 {
-		usage("interval cannot be negative")
+	interval, err := secToDuration(intervalSec)
+	if err != nil || interval < 0 {
+		usage("interval must be >= 0")
 	}
 
-	timeout := time.Duration(timeoutSec * float64(time.Second))
-	if timeout <= 0 {
-		usage("timeout must be positive")
+	timeout, err := secToDuration(timeoutSec)
+	if err != nil || timeout <= 0 {
+		usage("timeout must be > 0")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	target, err := ParseTarget(baseURL)
+	exclude := []string{"num"}
+	target, err := clients.ParseTarget(baseURL, exclude)
 	if err != nil {
 		log.Fatalf("parse %s: %v", baseURL, err)
 	}
 
-	if err := ProbeTarget(ctx, target, timeout); err != nil {
+	if err := ProbeTarget(ctx, target, 3, 3*time.Second, timeout); err != nil {
 		log.Fatalf("probe %s: %v", target.BaseURL, err)
 	}
 
@@ -113,96 +101,49 @@ func main() {
 	ctx, abort := context.WithCancelCause(ctx)
 	defer abort(context.Canceled)
 
-	stats := &Statistics{}
+	done := startWorkers(ctx, threads, abort, Config{
+		// worker config
+		interval: interval,
+		jitter:   jitter,
 
-	// TODO: вынести в отдельную функцию StartWorkers()
-	done := make(chan *hdrhistogram.Histogram, threads)
-	for i := 0; i < threads; i++ {
-		go func(id int) {
-			var hist *hdrhistogram.Histogram
-			defer func() { done <- hist }()
-
-			if percentiles {
-				hist = hdrhistogram.New(int64(histMinValue), int64(histMaxValue), 3)
-			}
-
-			client := NewSingleThreadClient(target, timeout, noKeepAlive)
-
-			worker := &Worker{
-				ID:        id,
-				Interval:  interval,
-				Stats:     stats,
-				ErrWindow: 2 * time.Second,
-			}
-
-			if jitter > 0 {
-				if err := randomSleep(ctx, jitter); err != nil {
-					return
-				}
-			}
-
-			// TODO: логика размазалась между воркером и работой. По идее, работа только client.DoRequest(num)
-			worker.Run(ctx, func(_ context.Context) error {
-				num := rand.IntN(201) - 100
-				since, err := client.DoRequest(num)
-				if err != nil {
-					if httpErr, ok := errors.AsType[*HTTPError](err); !ok || httpErr.Fatal() {
-						abort(err)
-					}
-					return err
-				}
-				if hist != nil {
-					if err := hist.RecordValue(int64(since)); err != nil {
-						// TODO: поставить барьер на % таких ошибок. Если их много надо править диапазон
-						log.Printf("hist.RecordValue: %v", err)
-					}
-				}
-				return nil
-			})
-		}(i + 1)
-	}
+		// client config
+		target:      target,
+		timeout:     timeout,
+		noKeepAlive: noKeepAlive,
+	})
 
 	log.Printf("Generator started: %d threads -> %s", threads, target.BaseURL)
 
 	<-ctx.Done()
 	log.Printf("Shutdown: %v, stopping generator...", context.Cause(ctx))
 
-	tm := time.NewTimer(2 * time.Second)
-	defer tm.Stop()
+	stat := waitWorkers(done, shutdownTimeout)
 
-	var mergedHist *hdrhistogram.Histogram
-	var dropped int64
-	skipped := threads
-
-	// TODO: вынести в отделную функцию WaitWorkers()
-waitLoop:
-	for ; skipped > 0; skipped-- {
-		select {
-		case <-tm.C:
-			break waitLoop
-		case hist := <-done:
-			if mergedHist == nil {
-				mergedHist = hist
-			} else {
-				dropped += mergedHist.Merge(hist)
-			}
-		}
+	if stat.Skipped > 0 {
+		log.Printf("skipped %d worker statistics", stat.Skipped)
 	}
-
-	_, _ = fmt.Printf("\nTotal requests: ok=%d errors=%d\n", stats.Ok.Load(), stats.Errors.Load())
+	_, _ = fmt.Printf("\nTotal requests: ok=%d errors=%d\n", stat.Ok, stat.Errors)
 
 	if percentiles {
-		if skipped > 0 {
-			log.Printf("skipped %d worker histograms", skipped)
+		if stat.Dropped > 0 {
+			log.Printf("hist.Merge: total dropped %d values", stat.Dropped)
 		}
-		if dropped > 0 {
-			log.Printf("hist.Merge: total dropped %d values", dropped)
-		}
-		if mergedHist != nil {
+		if stat.Hist != nil {
 			_, _ = fmt.Println()
-			_, _ = mergedHist.PercentilesPrint(os.Stdout, 1, float64(time.Microsecond))
+			_, _ = stat.Hist.PercentilesPrint(os.Stdout, 1, float64(time.Microsecond))
 		}
 	}
+}
+
+func secToDuration(sec float64) (time.Duration, error) {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return 0, errors.New("canot be NaN or Inf")
+	}
+	t := sec * float64(time.Second)
+	if t < math.MinInt64 || t >= math.MaxInt64 {
+		return 0, errors.New("absolute value too large")
+	}
+	return time.Duration(t), nil
 }
 
 func randomSleep(ctx context.Context, d time.Duration) error {
@@ -217,347 +158,116 @@ func randomSleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-type Target struct {
-	BaseURL  string        // для req.SetRequestURI: scheme://host/path?query (без user)
-	Host     string        // для Header.SetHost
-	Hostname string        // для SNI (tls.Config.ServerName)
-	DialAddr string        // ip:port для Dialer
-	Scheme   string        // "http" | "https"
-	User     *url.Userinfo // Basic auth, если был user:pass@
+type Config struct {
+	// worker config
+	jitter   time.Duration
+	interval time.Duration
+
+	// client config
+	target      *clients.Target
+	timeout     time.Duration
+	noKeepAlive bool
 }
 
-func ParseTarget(baseURL string) (Target, error) {
-	var zero Target
+func startWorkers(ctx context.Context, threads int, abort func(error), cfg Config) <-chan workers.Stat {
+	done := make(chan workers.Stat, threads)
 
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return zero, fmt.Errorf("parse url: %w", err)
-	}
-
-	scheme := u.Scheme
-	if scheme == "" {
-		scheme = "http"
-	}
-	if scheme != "http" && scheme != "https" {
-		return zero, fmt.Errorf("scheme must be http or https, got %q", scheme)
-	}
-
-	hostname := u.Hostname()
-	if hostname == "" {
-		return zero, errors.New("empty host in URL")
-	}
-
-	port := u.Port()
-	if port == "" {
-		if scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
-	}
-
-	ip := net.ParseIP(hostname)
-	if ip == nil {
-		ipAddr, err := net.ResolveIPAddr("ip", hostname)
-		if err != nil {
-			return zero, fmt.Errorf("resolve %q: %w", hostname, err)
-		}
-		ip = ipAddr.IP
-	}
-
-	// query без num - num допишем в DoRequest
-	q := u.Query()
-	q.Del("num")
-	rawQuery := q.Encode()
-
-	// Собираем обратно ручками
-	var sb strings.Builder
-	sb.Grow(len(baseURL) + 8)
-	sb.WriteString(scheme)
-	sb.WriteString("://")
-	sb.WriteString(u.Host) // hostname[:port] как ввел пользователь
-	path := u.EscapedPath()
-	if path == "" {
-		path = "/"
-	}
-	sb.WriteString(path)
-	if rawQuery != "" {
-		sb.WriteByte('?')
-		sb.WriteString(rawQuery)
-	}
-
-	return Target{
-		BaseURL:  sb.String(),
-		Host:     u.Host,
-		Hostname: hostname,
-		DialAddr: net.JoinHostPort(ip.String(), port),
-		Scheme:   scheme,
-		User:     u.User,
-	}, nil
-}
-
-func ProbeTarget(ctx context.Context, t Target, timeout time.Duration) error {
-	c := NewSingleThreadClient(t, timeout, true)
-	defer func() {
-		fasthttp.ReleaseRequest(c.req)
-		fasthttp.ReleaseResponse(c.resp)
-	}()
-
-	done := make(chan error)
-	go func() {
-		defer close(done)
-		c.req.SetRequestURI(t.BaseURL)
-		_, err := c.do()
-		done <- err
-	}()
-
-	var err error
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err = <-done:
-	}
-
-	if err != nil {
-		if httpErr, ok := errors.AsType[*HTTPError](err); !ok ||
-			(httpErr.Fatal() && httpErr.Code != 400) {
-			return err
-		}
-	}
-
-	return nil
-}
-
-type HTTPError struct {
-	Code    int
-	Message string
-}
-
-func (e *HTTPError) Error() string {
-	code := e.Code
-	msg := strings.TrimSpace(e.Message)
-	if msg == "" {
-		msg = http.StatusText(code)
-	}
-	return fmt.Sprintf("http %d: %s", code, msg)
-}
-
-func (e *HTTPError) Fatal() bool {
-	switch e.Code {
-	case 429, 500, 503: // мы зафлудили и серверу плохо
-		return false
-	}
-	// все остальное неожиданно и требует расследования
-	return true
-}
-
-type SingleThreadClient struct {
-	client *fasthttp.Client
-	uriBuf []byte
-	req    *fasthttp.Request
-	resp   *fasthttp.Response
-}
-
-func NewSingleThreadClient(t Target, timeout time.Duration, noKeepAlive bool) *SingleThreadClient {
-	client := &fasthttp.Client{
-		MaxConnsPerHost:           1,
-		MaxIdemponentCallAttempts: 1,
-		ReadTimeout:               timeout,
-		WriteTimeout:              timeout,
-	}
-
-	dialAddr := t.DialAddr
-	hostname := t.Hostname
-	isTLS := t.Scheme == "https"
-
-	client.Dial = func(_ string) (net.Conn, error) {
-		if isTLS {
-			return tls.Dial("tcp", dialAddr, &tls.Config{
-				ServerName: hostname,
-				MinVersion: tls.VersionTLS12,
+	for i := 0; i < threads; i++ {
+		go func(i int) {
+			client := clients.NewSingle(clients.Config{
+				BaseURL:     cfg.target.BaseURL,
+				DialAddr:    cfg.target.DialAddr,
+				UserInfo:    cfg.target.UserInfo,
+				Timeout:     cfg.timeout,
+				NoKeepAlive: cfg.noKeepAlive,
 			})
-		}
-		return fasthttp.Dial(dialAddr)
+			worker := &workers.Worker{
+				ID:       i + 1,
+				Client:   client,
+				Interval: cfg.interval,
+			}
+			stat, err := worker.Run(ctx)
+			if err != nil && err != context.Canceled && err != context.DeadlineExceeded {
+				abort(err)
+			}
+			done <- stat
+		}(i)
 	}
 
-	req := fasthttp.AcquireRequest()
-	req.Header.SetMethod("POST")
-	req.Header.SetHost(t.Host)
-	if noKeepAlive {
-		req.Header.SetConnectionClose()
-	}
-	if t.User != nil {
-		pass, _ := t.User.Password()
-		setBasicAuth(req, t.User.Username(), pass)
-	}
-
-	uriBuf := make([]byte, 0, len(t.BaseURL)+32)
-	uriBuf = append(uriBuf, t.BaseURL...)
-	if strings.ContainsRune(t.BaseURL, '?') {
-		uriBuf = append(uriBuf, "&num="...)
-	} else {
-		uriBuf = append(uriBuf, "?num="...)
-	}
-
-	return &SingleThreadClient{
-		client: client,
-		uriBuf: uriBuf,
-		req:    req,
-		resp:   fasthttp.AcquireResponse(),
-	}
+	return done
 }
 
-func setBasicAuth(req *fasthttp.Request, username, password string) {
-	auth := username + ":" + password
-	encoded := base64.StdEncoding.EncodeToString([]byte(auth))
-	req.Header.Set("Authorization", "Basic "+encoded)
-}
-
-func isOK(status int) bool {
-	return status/100*100 == 200
-}
-
-func (c *SingleThreadClient) do() (time.Duration, error) {
-
-	// Мы хотим знать время ответа сервера, но since - это server time + client time.
-	// Mаксимально сокращаем долю клиента.
-	start := time.Now()
-	err := c.client.Do(c.req, c.resp)
-	if err != nil {
-		return 0, err
-	}
-	since := time.Since(start)
-
-	if code := c.resp.StatusCode(); !isOK(code) {
-		msg := bytes.TrimSpace(c.resp.Body())
-		if len(msg) > 1024 {
-			msg = msg[:1024]
-		}
-		return 0, &HTTPError{Code: code, Message: string(msg)} // копирование msg
-	}
-
-	return since, nil
-}
-
-func (c *SingleThreadClient) DoRequest(num int) (time.Duration, error) {
-	uri := strconv.AppendInt(c.uriBuf, int64(num), 10)
-	c.req.SetRequestURIBytes(uri)
-	return c.do()
-}
-
-const defaultMinDelay = 100 * time.Millisecond
-const defaultMaxDelay = 30 * time.Second
-const delayJitterPerc = 20 // 0-100%
-
-type Worker struct {
-	ID       int
-	Interval time.Duration
-	Stats    *Statistics
-
-	ErrWindow time.Duration
-	lastErrs  map[string]errorCount
-}
-
-func (w *Worker) delayWithJitter(base time.Duration) time.Duration {
-	minD := max(w.Interval, defaultMinDelay)
-	maxD := max(w.Interval, defaultMaxDelay)
-
-	if base < minD {
-		base = minD
-	}
-	if base > maxD {
-		base = maxD
-	}
-
-	jitter := time.Duration(rand.Int64N(int64(base * delayJitterPerc / 100)))
-	return base*(200-delayJitterPerc)/200 + jitter
-}
-
-func (w *Worker) Run(ctx context.Context, work func(context.Context) error) {
-	tm := time.NewTimer(time.Hour)
-	tm.Stop()
+func waitWorkers(done <-chan workers.Stat, timeout time.Duration) Stat {
+	tm := time.NewTimer(timeout)
 	defer tm.Stop()
 
-	w.lastErrs = make(map[string]errorCount)
-	defer w.flushErrs(true)
+	var merged Stat
+	merged.Skipped = cap(done)
 
-	flushTime := time.Now().Add(time.Second)
-	interval := w.Interval
+	for i := 0; i < cap(done); i++ {
+		select {
+		case <-tm.C:
+			return merged
 
-	for ctx.Err() == nil { // на случай, если interval=0
-		err := work(ctx)
-		if err != nil {
-			w.Stats.Errors.Add(1)
-			w.logErr(err)
-			interval *= 2
-		} else {
-			w.Stats.Ok.Add(1)
-			interval = w.Interval
+		case stat := <-done:
+			merged.Skipped--
+			merged.Ok += stat.Ok
+			merged.Errors += stat.Errors
+
+			if stat.Hist != nil {
+				if merged.Hist == nil {
+					merged.Hist = stat.Hist
+				} else {
+					merged.Dropped += merged.Hist.Merge(stat.Hist)
+				}
+			}
 		}
+	}
 
-		if now := time.Now(); now.Sub(flushTime) >= 0 {
-			w.flushErrs(false)
-			flushTime = now.Add(time.Second)
-		}
+	return merged
+}
 
-		d := interval
-		if err != nil {
-			d = w.delayWithJitter(interval)
-		}
+func ProbeTarget(ctx context.Context, t *clients.Target, retries int, interval, timeout time.Duration) error {
+	c := clients.NewSingle(clients.Config{
+		BaseURL:     t.BaseURL,
+		DialAddr:    t.DialAddr,
+		UserInfo:    t.UserInfo,
+		Timeout:     timeout,
+		NoKeepAlive: true,
+	})
 
-		if d > 0 {
-			tm.Reset(d)
+	var err error
+	done := make(chan error, 1)
+	var tm *time.Timer
+
+	for i := 0; i < retries; i++ {
+		if i > 0 {
+			if tm == nil {
+				tm = time.NewTimer(interval)
+			} else {
+				tm.Reset(interval)
+			}
 			select {
 			case <-ctx.Done():
-				return
+				tm.Stop()
+				return ctx.Err()
 			case <-tm.C:
 			}
-		} else {
-			runtime.Gosched()
+		}
+
+		go func() {
+			done <- c.Probe()
+		}()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err = <-done:
+		}
+		if err == nil {
+			return nil
 		}
 	}
-}
 
-type errorCount struct {
-	flushAt    time.Time
-	suppressed int
-}
-
-func (w *Worker) flushErrs(force bool) {
-	now := time.Now()
-	for msg, cnt := range w.lastErrs {
-		if cnt.suppressed > 0 && (force || now.Sub(cnt.flushAt) >= 0) {
-			w.printErr(msg, cnt.suppressed)
-		}
-		if cnt.suppressed == 0 && now.Sub(cnt.flushAt) >= 0 {
-			delete(w.lastErrs, msg)
-		}
-	}
-}
-
-func (w *Worker) printErr(msg string, suppressed int) {
-	if suppressed == 0 {
-		log.Printf("[worker %d] request failed: %s", w.ID, msg)
-	} else {
-		log.Printf("[worker %d] request failed: %s (+%d similar)", w.ID, msg, suppressed)
-	}
-	win := w.ErrWindow
-	if win == 0 {
-		win = time.Second
-	}
-	w.lastErrs[msg] = errorCount{flushAt: time.Now().Add(win)}
-}
-
-func (w *Worker) logErr(err error) {
-	msg := err.Error()
-	now := time.Now()
-
-	cnt, ok := w.lastErrs[msg]
-	if ok && now.Sub(cnt.flushAt) < 0 {
-		cnt.suppressed++
-		w.lastErrs[msg] = cnt
-		return
-	}
-
-	w.printErr(msg, cnt.suppressed)
+	return err
 }
