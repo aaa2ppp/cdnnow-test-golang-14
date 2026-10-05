@@ -1,4 +1,4 @@
-//go:build linux
+//go:build cgo && linux
 
 package operators
 
@@ -6,13 +6,6 @@ package operators
 #cgo linux LDFLAGS: -ldl
 #include <dlfcn.h>
 #include <stdlib.h>
-#include <stdint.h>
-
-typedef int64_t (*operator_fn)(int64_t, int64_t);
-
-static inline int64_t call_operator(operator_fn fn, int64_t a, int64_t b) {
-    return fn(a, b);
-}
 */
 import "C"
 
@@ -26,8 +19,8 @@ import (
 type operators struct {
 	load      sync.Once
 	stickyErr error
-	add       C.operator_fn
-	sub       C.operator_fn
+	addFn     operatorFn
+	subFn     operatorFn
 }
 
 func (c *operators) loadLibs(cLibPath, rustLibPath string) error {
@@ -56,8 +49,8 @@ func (c *operators) loadLibs(cLibPath, rustLibPath string) error {
 			return
 		}
 
-		c.add = C.operator_fn(add)
-		c.sub = C.operator_fn(sub)
+		c.addFn = operatorFn(add)
+		c.subFn = operatorFn(sub)
 	})
 	return c.stickyErr
 }
@@ -98,16 +91,18 @@ func LoadLibraries(cLibPath, rustLibPath string) error {
 	return ops.loadLibs(cLibPath, rustLibPath)
 }
 
-func Add(a, b int64) int64 {
-	if ops.add == nil {
+func mustLoaded(fn operatorFn) operatorFn {
+	if fn == nil {
 		panic("operators: libraries not loaded")
 	}
-	return int64(C.call_operator(ops.add, C.int64_t(a), C.int64_t(b)))
+	return fn
 }
 
-func Sub(a, b int64) int64 {
-	if ops.sub == nil {
-		panic("operators: libraries not loaded")
-	}
-	return int64(C.call_operator(ops.sub, C.int64_t(a), C.int64_t(b)))
-}
+func AddOp() Op { return Op{mustLoaded(ops.addFn)} }
+func SubOp() Op { return Op{mustLoaded(ops.subFn)} }
+
+// Deprecated: use AddOp().Apply(a, b)
+func Add(a, b int64) int64 { return AddOp().Apply(a, b) }
+
+// Deprecated: use SubOp().Apply(a, b)
+func Sub(a, b int64) int64 { return SubOp().Apply(a, b) }
