@@ -156,7 +156,7 @@ func TestAPI(t *testing.T) {
 				svc = tt.newService()
 			}
 
-			router := New(Config{Service: svc, AsyncCalc: tt.asyncCalc})
+			router := NewStd(Config{Service: svc, AsyncCalc: tt.asyncCalc})
 			server := httptest.NewServer(router)
 
 			method, url, _ := strings.Cut(tt.request, " ")
@@ -249,7 +249,7 @@ func BenchmarkAPI(b *testing.B) {
 				defer calc.Stop()
 			}
 
-			server := httptest.NewServer(calcHandler(calc, false))
+			server := httptest.NewServer(stdCalcHandler(calc, false))
 
 			templ, _ := http.NewRequest("POST", server.URL+"/calc?num=42", nil)
 			ctx := context.Background()
@@ -322,7 +322,7 @@ func BenchmarkAPIParallel(b *testing.B) {
 				defer calc.Stop()
 			}
 
-			server := httptest.NewServer(calcHandler(calc, false))
+			server := httptest.NewServer(stdCalcHandler(calc, false))
 
 			templReq, _ := http.NewRequest("POST", server.URL+"/calc?num=42", nil)
 			ctx := context.Background()

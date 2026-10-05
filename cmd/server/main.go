@@ -39,6 +39,7 @@ func main() {
 		cLibPath    string
 		rustLibPath string
 		intervalSec float64
+		serverType  servers.ServerType
 		calcMode    servers.CalcMode
 		queueSize   int
 		pprofAddr   string
@@ -49,6 +50,7 @@ func main() {
 	flag.StringVar(&cLibPath, "c-lib", filepath.Join(libDir, "libcalculator.so"), "path to c-lib")
 	flag.StringVar(&rustLibPath, "rust-lib", filepath.Join(libDir, "libcalculator_rust.so"), "path to rust-lib")
 	flag.Float64Var(&intervalSec, "interval", 5.0, "seconds between periodic sum/sub reports")
+	flag.TextVar(&serverType, "type", servers.ServerStd, "http server type, can be: stdhttp (net/http), fasthttp")
 	flag.TextVar(&calcMode, "calc-mode", servers.Async, "calculation execution mode, can be: sync, async, parallel")
 	flag.IntVar(&queueSize, "queue-size", defaultQueueSize, "maximum task queue capacity. Returns 503 if the queue overflows. Only applies to async or parallel modes.")
 	flag.StringVar(&pprofAddr, "pprof-addr", "localhost:6060", "pprof listen address (host:port, empty to disable)")
@@ -76,12 +78,13 @@ func main() {
 	defer stop()
 
 	err = servers.Run(ctx, servers.Config{
-		Addr:      fmt.Sprintf("%s:%s", host, port),
-		Interval:  interval,
-		CalcMode:  calcMode,
-		QueueSize: queueSize,
-		PprofAddr: pprofAddr,
-		MaxConns:  maxConns,
+		Addr:       fmt.Sprintf("%s:%s", host, port),
+		Interval:   interval,
+		ServerType: serverType,
+		CalcMode:   calcMode,
+		QueueSize:  queueSize,
+		PprofAddr:  pprofAddr,
+		MaxConns:   maxConns,
 	})
 	if err != nil {
 		slog.Error("abnormal shutdown", "error", err)

@@ -19,6 +19,15 @@ import (
 const aggregatorQueueSize = 100
 const samplesBatchSize = 256
 
+//go:generate enumer -type ServerType -linecomment -text
+type ServerType uint8
+
+const (
+	_          ServerType = iota
+	ServerStd             // stdhttp
+	ServerFast            // fasthttp
+)
+
 //go:generate enumer -type CalcMode -linecomment -text
 type CalcMode uint8
 
@@ -30,12 +39,13 @@ const (
 )
 
 type Config struct {
-	Addr      string
-	Interval  time.Duration
-	CalcMode  CalcMode
-	QueueSize int
-	PprofAddr string
-	MaxConns  int
+	Addr       string
+	Interval   time.Duration
+	ServerType ServerType
+	CalcMode   CalcMode
+	QueueSize  int
+	PprofAddr  string
+	MaxConns   int
 }
 
 type service struct {
@@ -91,7 +101,7 @@ func Run(ctx context.Context, cfg Config) error {
 		calculator = calculators.NewParallel(cfg.QueueSize, aggregator.RecordDurations, pool)
 
 	default:
-		return fmt.Errorf("unknown calculation mode: %v", cfg.CalcMode)
+		return fmt.Errorf("servers.Run: unknown calculation mode: %v", cfg.CalcMode)
 	}
 
 	defer aggregator.Stop()
@@ -117,7 +127,13 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.CalcMode == Sync {
 		queueSize = 0
 	}
-	slog.Info("server listening", "addr", cfg.Addr, "mode", cfg.CalcMode, "queue", queueSize)
+	slog.Info("server listening", "addr", cfg.Addr, "type", cfg.ServerType, "mode", cfg.CalcMode, "queue", queueSize)
 
-	return runStdHTTPServer(ctx, listener, svc)
+	switch cfg.ServerType {
+	case ServerStd:
+		return runStdHTTPServer(ctx, listener, svc)
+	case ServerFast:
+		return runFastHTTPServer(ctx, listener, svc)
+	}
+	return fmt.Errorf("servers.Run: unknown server type: %v", cfg.ServerType)
 }
