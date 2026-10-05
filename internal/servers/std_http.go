@@ -11,7 +11,10 @@ import (
 )
 
 func runStdHTTPServer(ctx context.Context, listener net.Listener, svc *service) error {
-	router := api.New(svc)
+	router := api.New(api.Config{
+		Service:   svc,
+		AsyncCalc: svc.asyncCalc,
+	})
 
 	server := http.Server{
 		Handler:      router,
