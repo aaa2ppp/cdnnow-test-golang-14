@@ -16,7 +16,7 @@ DST   ?= 1
 MERGE_CODE := sh scripts/merge-code.sh
 
 # tip: to disable all linters can set LINTER=true
-LINTER ?= golangci-lint
+LINTER ?= golangci-lint --build-tags=test
 
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
@@ -57,7 +57,7 @@ lint: ## run linters
 	CGO_ENABLED=1 $(LINTER) run ./...
 
 test: build-libs ## run tests
-	CGO_ENABLED=1 go test --tags=test ./...
+	CGO_ENABLED=1 go test -tags=test ./...
 
 
 .PHONY: build-libs
@@ -93,7 +93,7 @@ build: build-libs build-server build-generator
 
 .PHONY: bench
 bench: build-libs ## run benchmarks
-	CGO_ENABLED=1 go test -bench . -benchmem ./...
+	CGO_ENABLED=1 go test -tags=test -bench . -benchmem ./...
 
 .PHONY: clean
 clean: ## remove bin and temp files
