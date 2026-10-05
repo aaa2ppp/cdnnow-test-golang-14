@@ -131,17 +131,6 @@ func (s *Service) Calculate(num int64) error              { return s.calculator.
 func (s *Service) CountRequests(kind metrics.RequestKind) { s.counter.CountRequests(kind, 1) }
 func (s *Service) PrintMetrics(w io.Writer) error         { return s.printer.Print(w) }
 
-type metricsAggr struct {
-	*metrics.Aggregator
-}
-
-func (m *metricsAggr) RecordAddDurations(batch []time.Duration) {
-	m.RecordDurations(metrics.Add, batch)
-}
-func (m *metricsAggr) RecordSubDurations(batch []time.Duration) {
-	m.RecordDurations(metrics.Sub, batch)
-}
-
 func run(ctx context.Context, cfg Config) error {
 	var aggregator *metrics.Aggregator
 	var calculator calculators.Calculator
@@ -167,17 +156,17 @@ func run(ctx context.Context, cfg Config) error {
 	switch cfg.CalcMode {
 	case Sync:
 		aggregator = metrics.NewAggregator(aggregatorQueueSize, nil, nil)
-		calculator = calculators.NewSyncCalculator(aggregator.RecordSample)
+		calculator = calculators.NewSync(aggregator.RecordSample)
 
 	case Async:
 		pool := pools.NewBatchPool[metrics.Sample](samplesBatchSize)
 		aggregator = metrics.NewAggregator(aggregatorQueueSize, pool, nil)
-		calculator = calculators.NewAsyncCalculator(cfg.QueueSize, aggregator.RecordSamples, pool)
+		calculator = calculators.NewAsync(cfg.QueueSize, aggregator.RecordSamples, pool)
 
 	case Parallel:
 		pool := pools.NewBatchPool[time.Duration](samplesBatchSize)
 		aggregator = metrics.NewAggregator(aggregatorQueueSize, nil, pool)
-		calculator = calculators.NewParallelCalculator(cfg.QueueSize, &metricsAggr{aggregator}, pool)
+		calculator = calculators.NewParallel(cfg.QueueSize, aggregator.RecordDurations, pool)
 
 	default:
 		return fmt.Errorf("unknown calculation mode: %v", cfg.CalcMode)

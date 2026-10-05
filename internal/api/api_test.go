@@ -205,14 +205,14 @@ func BenchmarkAPI(b *testing.B) {
 			"sync calc",
 			func() service {
 				return &mockCalcService{
-					Calculator: calculators.NewSyncCalculator(nil),
+					Calculator: calculators.NewSync(nil),
 				}
 			},
 		},
 		{
 			"async calc",
 			func() service {
-				c := calculators.NewAsyncCalculator(1024, nil, nil)
+				c := calculators.NewAsync(1024, nil, nil)
 				c.IgnoreOverload()
 				return &mockCalcService{
 					Calculator: c,
@@ -222,7 +222,7 @@ func BenchmarkAPI(b *testing.B) {
 		{
 			"parallel calc",
 			func() service {
-				c := calculators.NewParallelCalculator(1024, nil, nil)
+				c := calculators.NewParallel(1024, nil, nil)
 				c.IgnoreOverload()
 				return &mockCalcService{
 					Calculator: c,
@@ -278,14 +278,14 @@ func BenchmarkAPIParallel(b *testing.B) {
 			"sync calc",
 			func() service {
 				return &mockCalcService{
-					Calculator: calculators.NewSyncCalculator(nil),
+					Calculator: calculators.NewSync(nil),
 				}
 			},
 		},
 		{
 			"async calc",
 			func() service {
-				c := calculators.NewAsyncCalculator(1024, nil, nil)
+				c := calculators.NewAsync(1024, nil, nil)
 				c.IgnoreOverload()
 				return &mockCalcService{
 					Calculator: c,
@@ -295,7 +295,7 @@ func BenchmarkAPIParallel(b *testing.B) {
 		{
 			"parallel calc",
 			func() service {
-				c := calculators.NewParallelCalculator(1024, nil, nil)
+				c := calculators.NewParallel(1024, nil, nil)
 				c.IgnoreOverload()
 				return &mockCalcService{
 					Calculator: c,

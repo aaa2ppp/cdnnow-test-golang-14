@@ -9,8 +9,8 @@ import (
 	"aaa2ppp/cdnnow-test-golang-14/internal/pools"
 )
 
-// defaultRecordingDelay максимальная задержка перед записью метрик по умолчанию
-const defaultRecordingDelay = 100 * time.Millisecond
+// defaultRecordDelay максимальная задержка перед записью метрик по умолчанию
+const defaultRecordDelay = 100 * time.Millisecond
 
 // defaultBatchSize максимальный размер партии метрик по умолчанию,
 // используется если не задан пул
@@ -28,188 +28,201 @@ type Calculator interface {
 	Values() Values
 }
 
-// SyncCalculator выполняет вычисления синхронно.
-// Клиент ждет результата; Sum и Sub согласованы.
-type SyncCalculator struct {
-	record func(metrics.Sample)
-	lock   chan struct{} // FIFO-мьютекс, cap=1
-
-	vals Values
+type AsyncCalculator interface {
+	Calculator
+	Stop()
 }
 
-var _ Calculator = &SyncCalculator{}
-
-func NewSyncCalculator(record func(metrics.Sample)) *SyncCalculator {
-	return &SyncCalculator{
-		record: record,
-		lock:   make(chan struct{}, 1),
-	}
+type dualState struct {
+	addOp operators.Op
+	subOp operators.Op
+	vals  Values
 }
 
-func (c *SyncCalculator) add(num int64) time.Duration {
+func (c *dualState) add(num int64) time.Duration {
 	start := time.Now()
-	c.vals.Sum = operators.Add(c.vals.Sum, num)
+	c.vals.Sum = c.addOp.Apply(c.vals.Sum, num)
 	return time.Since(start)
 }
 
-func (c *SyncCalculator) sub(num int64) time.Duration {
+func (c *dualState) sub(num int64) time.Duration {
 	start := time.Now()
-	c.vals.Sub = operators.Sub(c.vals.Sub, num)
+	c.vals.Sub = c.subOp.Apply(c.vals.Sub, num)
 	return time.Since(start)
 }
 
-func (c *SyncCalculator) calculate(num int64) metrics.Sample {
+func (c *dualState) calculate(num int64) metrics.Sample {
 	return metrics.Sample{
 		AddDuration: c.add(num),
 		SubDuration: c.sub(num),
 	}
 }
 
-func (c *SyncCalculator) Calculate(num int64) error {
+// Sync выполняет вычисления синхронно.
+// Клиент ждет результата; Sum и Sub согласованы.
+type Sync struct {
+	dualState
+	recordFn func(metrics.Sample)
+	lock     chan struct{} // FIFO-мьютекс, cap=1
+}
+
+var _ Calculator = &Sync{}
+
+func NewSync(recordFn func(metrics.Sample)) *Sync {
+	return &Sync{
+		recordFn: recordFn,
+		lock:     make(chan struct{}, 1),
+		dualState: dualState{
+			addOp: operators.AddOp(),
+			subOp: operators.SubOp(),
+		},
+	}
+}
+
+func (c *Sync) record(sample metrics.Sample) {
+	if c.recordFn != nil {
+		c.recordFn(sample)
+	}
+}
+
+func (c *Sync) Calculate(num int64) error {
 	c.lock <- struct{}{}
 	sample := c.calculate(num)
 	<-c.lock
-
-	if c.record != nil {
-		c.record(sample)
-	}
-
+	c.record(sample)
 	return nil
 }
 
-func (c *SyncCalculator) Values() Values {
+func (c *Sync) Values() Values {
 	c.lock <- struct{}{}
 	vals := c.vals
 	<-c.lock
 	return vals
 }
 
-// AsyncCalculator выполняет вычисления в отдельной горутине.
-// Клиент не ждет; Sum и Sub согласованы.
-type AsyncCalculator struct {
-	vals      Values
-	record    func([]metrics.Sample)
-	pool      *pools.BatchPool[metrics.Sample]
-	batchSize int
-	recDelay  time.Duration
-	numCh     chan int64
-	getValCh  chan Values
-	done      chan struct{}
+type metricRecorder[S any] struct {
+	recordFn    func([]S)
+	recordDelay time.Duration
+	batchPool   *pools.BatchPool[S]
+	batchSize   int
+	batch       []S
+	flushTm     *time.Timer
+}
 
+func (c *metricRecorder[S]) makeBatch() []S {
+	if c.batchPool != nil {
+		return c.batchPool.Get()
+	}
+	return make([]S, 0, c.batchSize)
+}
+
+func (c *metricRecorder[S]) record(sample S) {
+	if c.recordFn == nil {
+		return
+	}
+
+	if c.batch == nil {
+		c.batch = c.makeBatch()
+		c.flushTm.Reset(c.recordDelay)
+	}
+
+	c.batch = append(c.batch, sample)
+	if len(c.batch) >= c.batchSize {
+		c.flush()
+	}
+}
+
+func (c *metricRecorder[S]) flush() {
+	if c.recordFn == nil || c.batch == nil {
+		return
+	}
+
+	c.recordFn(c.batch)
+	c.batch = nil
+	c.flushTm.Stop()
+}
+
+// Async выполняет вычисления в отдельной горутине.
+// Клиент не ждет; Sum и Sub согласованы.
+type Async struct {
+	dualState
+	metricRecorder[metrics.Sample]
+
+	// server
+	numCh          chan int64
+	valCh          chan Values
+	done           chan struct{}
 	ignoreOverload bool
 }
 
-var _ Calculator = &AsyncCalculator{}
+var _ AsyncCalculator = &Async{}
 
-// NewAsyncCalculator запускает калькулятор в отдельной горутине.
-func NewAsyncCalculator(
+// NewAsync запускает калькулятор в отдельной горутине.
+func NewAsync(
 	queueSize int,
-	record func([]metrics.Sample),
-	pool *pools.BatchPool[metrics.Sample],
+	recordFn func([]metrics.Sample),
+	batchPool *pools.BatchPool[metrics.Sample],
 
-) *AsyncCalculator {
+) *Async {
 	batchSize := defaultBatchSize
-	if pool != nil {
-		batchSize = pool.BatchSize()
+	if batchPool != nil {
+		batchSize = batchPool.BatchSize()
 	}
 
-	c := AsyncCalculator{
-		record:    record,
-		pool:      pool,
-		batchSize: batchSize,
-		recDelay:  defaultRecordingDelay,
-		numCh:     make(chan int64, queueSize),
-		getValCh:  make(chan Values),
-		done:      make(chan struct{}),
+	c := Async{
+		dualState: dualState{
+			addOp: operators.AddOp(),
+			subOp: operators.SubOp(),
+		},
+
+		metricRecorder: metricRecorder[metrics.Sample]{
+			recordFn:    recordFn,
+			recordDelay: defaultRecordDelay,
+			batchPool:   batchPool,
+			batchSize:   batchSize,
+		},
+
+		numCh:          make(chan int64, queueSize),
+		valCh:          make(chan Values),
+		done:           make(chan struct{}),
+		ignoreOverload: queueSize == 0,
 	}
 
 	go c.serve()
 	return &c
 }
 
-func (c *AsyncCalculator) add(num int64) time.Duration {
-	start := time.Now()
-	c.vals.Sum = operators.Add(c.vals.Sum, num)
-	return time.Since(start)
-}
-
-func (c *AsyncCalculator) sub(num int64) time.Duration {
-	start := time.Now()
-	c.vals.Sub = operators.Sub(c.vals.Sub, num)
-	return time.Since(start)
-}
-
-func (c *AsyncCalculator) calculate(num int64) metrics.Sample {
-	return metrics.Sample{
-		AddDuration: c.add(num),
-		SubDuration: c.sub(num),
-	}
-}
-
-func (c *AsyncCalculator) makeBatch() []metrics.Sample {
-	if c.pool != nil {
-		return c.pool.Get()
-	}
-	return make([]metrics.Sample, 0, c.batchSize)
-}
-
-func (c *AsyncCalculator) serve() {
+func (c *Async) serve() {
 	defer func() {
-		close(c.getValCh)
+		close(c.valCh)
 		close(c.done)
 	}()
 
-	var batch []metrics.Sample
-	defer func() {
-		if c.record != nil && batch != nil {
-			c.record(batch)
-		}
-	}()
+	defer c.flush()
 
-	flushTm := time.NewTimer(time.Hour)
-	flushTm.Stop()
-	defer flushTm.Stop()
+	c.flushTm = time.NewTimer(time.Hour)
+	c.flushTm.Stop()
+	defer c.flushTm.Stop()
 
 	for {
 		select {
-		case <-flushTm.C:
-			c.record(batch)
-			batch = nil
+		case <-c.flushTm.C:
+			c.flush()
 
 		case num, ok := <-c.numCh:
 			if !ok {
 				return
 			}
-
 			sample := c.calculate(num)
+			c.record(sample)
 
-			if c.record != nil {
-				if batch == nil {
-					batch = c.makeBatch()
-					flushTm.Reset(c.recDelay)
-				}
-
-				batch = append(batch, sample)
-
-				if len(batch) >= c.batchSize {
-					c.record(batch)
-					batch = nil
-					flushTm.Stop()
-				}
-			}
-
-		case c.getValCh <- c.vals:
+		case c.valCh <- c.vals:
 		}
 	}
 }
 
-// IgnoreOverload FOR TEST ONLY
-func (c *AsyncCalculator) IgnoreOverload() {
-	c.ignoreOverload = true
-}
-
 // Calculate отправляет число на обработку. Паникует после Stop.
-func (c *AsyncCalculator) Calculate(num int64) error {
+func (c *Async) Calculate(num int64) error {
 	if c.ignoreOverload {
 		c.numCh <- num
 		return nil
@@ -223,134 +236,104 @@ func (c *AsyncCalculator) Calculate(num int64) error {
 }
 
 // Values возвращает текущие Sum и Sub. После Stop возвращает финальные значения.
-func (c *AsyncCalculator) Values() Values {
-	if vals, ok := <-c.getValCh; ok {
+func (c *Async) Values() Values {
+	if vals, ok := <-c.valCh; ok {
 		return vals
 	}
 	return c.vals
 }
 
 // Stop останавливает калькулятор. Паникует при повторном вызове.
-func (c *AsyncCalculator) Stop() {
+func (c *Async) Stop() {
 	close(c.numCh)
 	<-c.done
 }
 
-type CalculateFunc func(a, b int64) int64
+// asyncSingle аналогично Async, но только для одного оператора.
+type asyncSingle struct {
+	// single state
+	op  operators.Op
+	val int64
 
-// asyncSingleCalculator аналогично СhannelCalculator, но только для одной операции.
-type asyncSingleCalculator struct {
-	val       int64
-	calcFn    CalculateFunc
-	record    func([]time.Duration)
-	pool      *pools.BatchPool[time.Duration]
-	batchSize int
-	recDelay  time.Duration
-	numCh     chan int64
-	getValCh  chan int64
-	done      chan struct{}
+	metricRecorder[time.Duration]
 
+	// server
+	numCh          chan int64
+	valCh          chan int64
+	done           chan struct{}
 	ignoreOverload bool
 }
 
-// newSingleAsyncCalculator запускает калькулятор в отдельной горутине для заданной операции.
-func newSingleAsyncCalculator(
-	calcFn CalculateFunc,
+// newAsyncSingle запускает калькулятор в отдельной горутине для заданного оператора.
+func newAsyncSingle(
+	op operators.Op,
 	queueSize int,
 	record func([]time.Duration),
-	pool *pools.BatchPool[time.Duration],
+	batchPool *pools.BatchPool[time.Duration],
 
-) *asyncSingleCalculator {
+) *asyncSingle {
 	batchSize := defaultBatchSize
-	if pool != nil {
-		batchSize = pool.BatchSize()
+	if batchPool != nil {
+		batchSize = batchPool.BatchSize()
 	}
 
-	c := &asyncSingleCalculator{
-		calcFn:    calcFn,
-		record:    record,
-		pool:      pool,
-		batchSize: batchSize,
-		recDelay:  defaultRecordingDelay,
-		numCh:     make(chan int64, queueSize),
-		getValCh:  make(chan int64),
-		done:      make(chan struct{}),
+	c := &asyncSingle{
+		op: op,
+
+		metricRecorder: metricRecorder[time.Duration]{
+			recordFn:    record,
+			recordDelay: defaultRecordDelay,
+			batchPool:   batchPool,
+			batchSize:   batchSize,
+		},
+
+		numCh:          make(chan int64, queueSize),
+		valCh:          make(chan int64),
+		done:           make(chan struct{}),
+		ignoreOverload: queueSize == 0,
 	}
 
 	go c.serve()
 	return c
 }
 
-func (c *asyncSingleCalculator) calculate(num int64) time.Duration {
+func (c *asyncSingle) calculate(num int64) time.Duration {
 	start := time.Now()
-	c.val = c.calcFn(c.val, num)
+	c.val = c.op.Apply(c.val, num)
 	return time.Since(start)
 }
 
-func (c *asyncSingleCalculator) makeBatch() []time.Duration {
-	if c.pool != nil {
-		return c.pool.Get()
-	}
-	return make([]time.Duration, 0, c.batchSize)
-}
-
-func (c *asyncSingleCalculator) serve() {
+func (c *asyncSingle) serve() {
 	defer func() {
-		close(c.getValCh)
+		close(c.valCh)
 		close(c.done)
 	}()
 
-	var batch []time.Duration
-	defer func() {
-		if c.record != nil && batch != nil {
-			c.record(batch)
-		}
-	}()
+	defer c.flush()
 
-	flushTm := time.NewTimer(time.Hour)
-	flushTm.Stop()
-	defer flushTm.Stop()
+	c.flushTm = time.NewTimer(time.Hour)
+	c.flushTm.Stop()
+	defer c.flushTm.Stop()
 
 	for {
 		select {
-		case <-flushTm.C:
-			c.record(batch)
-			batch = nil
+		case <-c.flushTm.C:
+			c.flush()
 
 		case num, ok := <-c.numCh:
 			if !ok {
 				return
 			}
+			sample := c.calculate(num)
+			c.record(sample)
 
-			d := c.calculate(num)
-
-			if c.record != nil {
-				if batch == nil {
-					batch = c.makeBatch()
-					flushTm.Reset(c.recDelay)
-				}
-
-				batch = append(batch, d)
-
-				if len(batch) >= c.batchSize {
-					c.record(batch)
-					batch = nil
-					flushTm.Stop()
-				}
-			}
-
-		case c.getValCh <- c.val:
+		case c.valCh <- c.val:
 		}
 	}
 }
 
-// IgnoreOverload FOR TEST ONLY
-func (c *asyncSingleCalculator) IgnoreOverload() {
-	c.ignoreOverload = true
-}
-
 // Calculate отправляет число на обработку. Паникует после Stop.
-func (c *asyncSingleCalculator) Calculate(num int64) error {
+func (c *asyncSingle) Calculate(num int64) error {
 	if c.ignoreOverload {
 		c.numCh <- num
 		return nil
@@ -365,89 +348,78 @@ func (c *asyncSingleCalculator) Calculate(num int64) error {
 }
 
 // Value возвращает текущее значение. После Stop возвращает финальное значение.
-func (c *asyncSingleCalculator) Value() int64 {
-	if val, ok := <-c.getValCh; ok {
+func (c *asyncSingle) Value() int64 {
+	if val, ok := <-c.valCh; ok {
 		return val
 	}
 	return c.val
 }
 
 // Stop останавливает калькулятор. Паникует при повторном вызове.
-func (c *asyncSingleCalculator) Stop() {
+func (c *asyncSingle) Stop() {
 	close(c.numCh)
 	<-c.done
 }
 
-// ParallelCalculator выполняет Add и Sub в параллельных горутинах.
+// Parallel выполняет Add и Sub в параллельных горутинах.
 // Клиент не ждёт; Sum и Sub в моменте могут расходиться.
-type ParallelCalculator struct {
-	addCalc *asyncSingleCalculator
-	subCalc *asyncSingleCalculator
+type Parallel struct {
+	sum *asyncSingle
+	sub *asyncSingle
 }
 
-var _ Calculator = &ParallelCalculator{}
+var _ AsyncCalculator = &Parallel{}
 
-type MetricsAggregator interface {
-	RecordAddDurations([]time.Duration)
-	RecordSubDurations([]time.Duration)
-}
-
-// NewParallelCalculator запускает асинхронный калькулятор, который вычисляет Add и Sub в параллельных горутинах.
-func NewParallelCalculator(
+// NewParallel запускает асинхронный калькулятор, который вычисляет Sum и Sub в параллельных горутинах.
+func NewParallel(
 	queueSize int,
-	aggregator MetricsAggregator,
+	recordFn func(metrics.DurationKind, []time.Duration),
 	pool *pools.BatchPool[time.Duration],
 
-) *ParallelCalculator {
+) *Parallel {
 	var recordAdd, recordSub func([]time.Duration)
-	if aggregator != nil {
-		recordAdd = aggregator.RecordAddDurations
-		recordSub = aggregator.RecordSubDurations
+	if recordFn != nil {
+		recordAdd = func(d []time.Duration) { recordFn(metrics.Add, d) }
+		recordSub = func(d []time.Duration) { recordFn(metrics.Sub, d) }
 	}
 
-	addCalc := newSingleAsyncCalculator(operators.Add, queueSize, recordAdd, pool)
-	subCalc := newSingleAsyncCalculator(operators.Sub, queueSize, recordSub, pool)
+	sum := newAsyncSingle(operators.AddOp(), queueSize, recordAdd, pool)
+	sub := newAsyncSingle(operators.SubOp(), queueSize, recordSub, pool)
 
-	// Для обеспечения согласованности результата, вычисления должны быть выполнены ОБЕИМИ функциями.
-	// В случае сбоя в одной из них, результат второй должен быть отброшен.
-	// У нас возможно только ErrOverload. Add выполняется медленнее, чем Sub. Мы будем проверять
-	// перегрузку только в addCalc, а Sub выполнять безусловно в случае успеха Add.
+	// Для обеспечения согласованности результата, вычисления должны быть выполнены ОБЕИМИ калькуляторами.
+	// В случае сбоя в одном из них, результат второго должен быть отброшен.
+	// У нас возможно только ErrOverload. SubOp выполняется не медленнее, чем AddOp. Мы будем проверять
+	// перегрузку только в Sum калькуляторе, а Sub вычислять безусловно в случае успеха Sum.
 	// Если вы измените это поведение, вам необходимо внести соответствующие изменения в метод Calculate.
 	//
 	// Примечание: в редких случаях на это может привести к блокировке горутины HTTP-обработчика,
 	// что является осознанным компромиссом ради сохранения согласованности без сложного отката.
-	subCalc.IgnoreOverload()
+	sub.ignoreOverload = true
 
-	return &ParallelCalculator{
-		addCalc: addCalc,
-		subCalc: subCalc,
+	return &Parallel{
+		sum: sum,
+		sub: sub,
 	}
 }
 
-// IgnoreOverload FOR TEST ONLY
-func (c *ParallelCalculator) IgnoreOverload() {
-	c.addCalc.IgnoreOverload()
-	c.subCalc.IgnoreOverload()
-}
-
-func (c *ParallelCalculator) Calculate(num int64) error {
-	if err := c.addCalc.Calculate(num); err != nil {
+func (c *Parallel) Calculate(num int64) error {
+	if err := c.sum.Calculate(num); err != nil {
 		return err
 	}
-	// Если Add завершился успехом, выполняем Sub безусловно.
-	// В конструкторе должна быть отключена проверка перегрузки для Sub: subCalc.IgnoreOverload()
-	_ = c.subCalc.Calculate(num)
+	// Если Sum завершился успехом, вычисляем Sub безусловно.
+	// В конструкторе должна быть отключена проверка перегрузки для Sub: sub.ignoreOverload = true
+	_ = c.sub.Calculate(num)
 	return nil
 }
 
-func (c *ParallelCalculator) Values() Values {
+func (c *Parallel) Values() Values {
 	return Values{
-		Sum: c.addCalc.Value(),
-		Sub: c.subCalc.Value(),
+		Sum: c.sum.Value(),
+		Sub: c.sub.Value(),
 	}
 }
 
-func (c *ParallelCalculator) Stop() {
-	c.addCalc.Stop()
-	c.subCalc.Stop()
+func (c *Parallel) Stop() {
+	c.sum.Stop()
+	c.sub.Stop()
 }
