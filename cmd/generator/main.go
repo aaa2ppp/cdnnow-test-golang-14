@@ -20,13 +20,13 @@ const loggerWindow = 1 * time.Second
 func main() {
 	cfg := ParseConfigOrExit(filepath.Base(os.Args[0]), os.Args[1:]...)
 
-	target, err := clients.ParseTarget(cfg.BaseURL, cfg.DropKeys)
+	target, err := clients.PrepareTarget(cfg.BaseURL, cfg.DropKeys)
 	if err != nil {
 		log.Fatalf("parse %s: %v", cfg.BaseURL, err)
 	}
 
 	if err := ProbeTarget(target, cfg.Timeout); err != nil {
-		log.Fatalf("probe %s: %v", target.BaseURL, err)
+		log.Fatalf("probe %+v: %v", target, err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -49,7 +49,7 @@ func main() {
 		NoKeepAlive: cfg.NoKeepAlive,
 	})
 
-	log.Printf("Generator started: %d threads -> %s", cfg.Threads, target.BaseURL)
+	log.Printf("Generator started: %d threads -> http://%s%s", cfg.Threads, target.DialAddr, target.Path)
 
 	<-ctx.Done()
 	log.Printf("Shutdown: %v, stopping generator...", context.Cause(ctx))

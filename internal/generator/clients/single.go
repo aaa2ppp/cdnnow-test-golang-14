@@ -2,7 +2,6 @@ package clients
 
 import (
 	"bytes"
-	"encoding/base64"
 	"math"
 	"net/http"
 	"strconv"
@@ -41,14 +40,11 @@ func NewSingle(c Config) *Single {
 	if c.NoKeepAlive {
 		req.Header.SetConnectionClose()
 	}
-	if t.UserInfo != nil {
-		pass, _ := t.UserInfo.Password()
-		setBasicAuth(req, t.UserInfo.Username(), pass)
-	}
+	req.Header.SetHost(t.HostHeader)
 
-	uriBuf := make([]byte, 0, len(t.BaseURL)+32)
-	uriBuf = append(uriBuf, t.BaseURL...)
-	if strings.ContainsRune(t.BaseURL, '?') {
+	uriBuf := make([]byte, 0, len(t.Path)+32)
+	uriBuf = append(uriBuf, t.Path...)
+	if strings.ContainsRune(t.Path, '?') {
 		uriBuf = append(uriBuf, "&num="...)
 	} else {
 		uriBuf = append(uriBuf, "?num="...)
@@ -65,12 +61,6 @@ func NewSingle(c Config) *Single {
 		uriBuf:  uriBuf,
 		timeout: c.Timeout,
 	}
-}
-
-func setBasicAuth(req *fasthttp.Request, username, password string) {
-	auth := username + ":" + password
-	encoded := base64.StdEncoding.EncodeToString([]byte(auth))
-	req.Header.Set("Authorization", "Basic "+encoded)
 }
 
 func isOK(status int) bool {

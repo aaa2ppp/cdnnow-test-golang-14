@@ -9,12 +9,17 @@ import (
 )
 
 type Target struct {
-	BaseURL  string        // для req.SetRequestURI: scheme://host/path?query
-	DialAddr string        // ip:port для Dialer
-	UserInfo *url.Userinfo // Basic auth, если был user:pass@
+	DialAddr   string // ip:port для дозвона
+	Path       string // path?query для запроса
+	HostHeader string // значение заголовка Host
 }
 
-func ParseTarget(baseURL string, dropKeys []string) (Target, error) {
+// PrepareTarget подготавливает цель для http клиента.
+//   - Берет из URL только схему, хост, порт, путь и query
+//   - Проверяет схему - должна быть http, может быть опущена
+//   - Резолвит hostname в IPv4
+//   - Чистит query от dropKeys
+func PrepareTarget(baseURL string, dropKeys []string) (Target, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return Target{}, fmt.Errorf("parse url: %w", err)
@@ -24,8 +29,8 @@ func ParseTarget(baseURL string, dropKeys []string) (Target, error) {
 	if scheme == "" {
 		scheme = "http"
 	}
-	if scheme != "http" && scheme != "https" {
-		return Target{}, fmt.Errorf("scheme must be http or https, got %q", scheme)
+	if scheme != "http" {
+		return Target{}, fmt.Errorf("scheme must be http, got %q", scheme)
 	}
 
 	hostname := u.Hostname()
@@ -33,41 +38,39 @@ func ParseTarget(baseURL string, dropKeys []string) (Target, error) {
 		return Target{}, errors.New("empty host in URL")
 	}
 
-	port := u.Port()
-	if port == "" {
-		if scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
+	// Резолвим один раз и только в IPv4: при "ip", например, localhost может
+	// разрезолвиться в ::1, а сервер обычно слушает 127.0.0.1.
+	ipAddr, err := net.ResolveIPAddr("ip4", hostname)
+	if err != nil {
+		return Target{}, err
 	}
 
-	// чистим query
+	port := u.Port()
+	if port == "" {
+		port = "80"
+	}
+
+	var path strings.Builder
+	if escPath := u.EscapedPath(); escPath == "" {
+		path.WriteByte('/')
+	} else {
+		path.WriteString(escPath)
+	}
+
 	q := u.Query()
 	for _, key := range dropKeys {
 		q.Del(key)
 	}
 	rawQuery := q.Encode()
 
-	// Собираем обратно ручками
-	var sb strings.Builder
-	sb.Grow(len(baseURL) + 8)
-	sb.WriteString(scheme)
-	sb.WriteString("://")
-	sb.WriteString(u.Host) // hostname[:port] как ввел пользователь
-	path := u.EscapedPath()
-	if path == "" {
-		path = "/"
-	}
-	sb.WriteString(path)
 	if rawQuery != "" {
-		sb.WriteByte('?')
-		sb.WriteString(rawQuery)
+		path.WriteByte('?')
+		path.WriteString(rawQuery)
 	}
 
 	return Target{
-		BaseURL:  sb.String(),
-		DialAddr: net.JoinHostPort(hostname, port),
-		UserInfo: u.User,
+		DialAddr:   net.JoinHostPort(ipAddr.String(), port),
+		Path:       path.String(),
+		HostHeader: u.Host,
 	}, nil
 }
