@@ -17,8 +17,14 @@ type Config struct {
 	NoKeepAlive bool
 }
 
-// Single одно соединение к серверу, не является потокобезопасным
-type Single struct {
+const calcNumKey = "num"
+
+func CalcKeys() []string {
+	return []string{calcNumKey}
+}
+
+// Calc клиент. Создает одно соединение к серверу, не является потокобезопасным
+type Calc struct {
 	client  *fasthttp.HostClient
 	req     *fasthttp.Request
 	resp    *fasthttp.Response
@@ -26,7 +32,7 @@ type Single struct {
 	timeout time.Duration
 }
 
-func NewSingle(c Config) *Single {
+func NewCalc(c Config) *Calc {
 	t := c.Target
 	client := &fasthttp.HostClient{
 		Addr:     t.DialAddr,
@@ -42,19 +48,22 @@ func NewSingle(c Config) *Single {
 	}
 	req.Header.SetHost(t.HostHeader)
 
-	uriBuf := make([]byte, 0, len(t.Path)+32)
+	const maxInt64Digits = 20 // len("-9223372036854775808")
+	uriBuf := make([]byte, 0, len(t.Path)+len(calcNumKey)+2+maxInt64Digits)
 	uriBuf = append(uriBuf, t.Path...)
 	if strings.ContainsRune(t.Path, '?') {
-		uriBuf = append(uriBuf, "&num="...)
+		uriBuf = append(uriBuf, '&')
 	} else {
-		uriBuf = append(uriBuf, "?num="...)
+		uriBuf = append(uriBuf, '?')
 	}
+	uriBuf = append(uriBuf, calcNumKey...)
+	uriBuf = append(uriBuf, '=')
 
 	// преалацируем память в req под URI
 	maxURI := strconv.AppendInt(uriBuf, math.MinInt64, 10)
 	req.SetRequestURIBytes(maxURI)
 
-	return &Single{
+	return &Calc{
 		client:  client,
 		req:     req,
 		resp:    fasthttp.AcquireResponse(),
@@ -78,7 +87,7 @@ func errorMsg(code int, body []byte) (msg string) {
 	return string(body)
 }
 
-func (c *Single) DoRequest(num int) (time.Duration, error) {
+func (c *Calc) DoRequest(num int) (time.Duration, error) {
 	uri := strconv.AppendInt(c.uriBuf, int64(num), 10)
 	c.req.SetRequestURIBytes(uri)
 

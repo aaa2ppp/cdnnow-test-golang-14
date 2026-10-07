@@ -20,7 +20,7 @@ const loggerWindow = 1 * time.Second
 func main() {
 	cfg := ParseConfigOrExit(filepath.Base(os.Args[0]), os.Args[1:]...)
 
-	target, err := clients.PrepareTarget(cfg.BaseURL, cfg.DropKeys)
+	target, err := clients.PrepareTarget(cfg.BaseURL, clients.CalcKeys())
 	if err != nil {
 		log.Fatalf("parse %s: %v", cfg.BaseURL, err)
 	}

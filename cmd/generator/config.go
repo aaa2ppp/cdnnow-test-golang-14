@@ -12,7 +12,6 @@ import (
 
 type Config struct {
 	BaseURL     string
-	DropKeys    []string
 	Threads     int
 	Interval    time.Duration
 	Timeout     time.Duration
@@ -94,7 +93,6 @@ func ParseConfig(output io.Writer, name string, args ...string) (Config, error) 
 
 	return Config{
 		BaseURL:     f.baseURL,
-		DropKeys:    []string{"num"},
 		Threads:     f.threads,
 		Interval:    interval,
 		Timeout:     timeout,

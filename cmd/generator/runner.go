@@ -43,7 +43,7 @@ func startWorkers(ctx context.Context, n int, cfg RunConfig) <-chan *workers.Sta
 
 	for i := 0; i < n; i++ {
 		go func(i int) {
-			client := clients.NewSingle(clients.Config{
+			client := clients.NewCalc(clients.Config{
 				Target:      cfg.Target,
 				Timeout:     cfg.Timeout,
 				NoKeepAlive: cfg.NoKeepAlive,

@@ -9,7 +9,7 @@ import (
 // ProbeTarget делает один "нейтральный" запрос, чтобы убедиться,
 // что эндпоинт жив и отвечает корректно.
 func ProbeTarget(target clients.Target, timeout time.Duration) error {
-	c := clients.NewSingle(clients.Config{
+	c := clients.NewCalc(clients.Config{
 		Target:      target,
 		Timeout:     timeout,
 		NoKeepAlive: true,
