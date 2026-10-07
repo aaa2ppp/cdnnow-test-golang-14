@@ -25,8 +25,10 @@ func main() {
 		log.Fatalf("parse %s: %v", cfg.BaseURL, err)
 	}
 
-	if err := ProbeTarget(target, cfg.Timeout); err != nil {
-		log.Fatalf("probe %+v: %v", target, err)
+	if !cfg.NoProbe {
+		if err := ProbeTarget(target, cfg.Timeout); err != nil {
+			log.Fatalf("probe %+v: %v", target, err)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

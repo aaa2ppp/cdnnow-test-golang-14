@@ -18,6 +18,7 @@ type Config struct {
 	Duration    time.Duration
 	Jitter      time.Duration
 	NoKeepAlive bool
+	NoProbe     bool
 	Percentiles bool
 }
 
@@ -42,6 +43,7 @@ func ParseConfig(output io.Writer, name string, args ...string) (Config, error) 
 		intervalSec float64
 		timeoutSec  float64
 		noKeepAlive bool
+		noProbe     bool
 		percentiles bool
 		duration    time.Duration
 		jitter      time.Duration
@@ -55,6 +57,7 @@ func ParseConfig(output io.Writer, name string, args ...string) (Config, error) 
 	fs.DurationVar(&f.duration, "d", 0, "total duration (0 = unlimited)")
 	fs.DurationVar(&f.jitter, "j", 0, "max random delay at worker start")
 	fs.BoolVar(&f.noKeepAlive, "no-keep-alive", false, "new connection per request")
+	fs.BoolVar(&f.noProbe, "no-probe", false, "do not probe URL before starting workers")
 	fs.BoolVar(&f.percentiles, "p", false, "show latency percentiles")
 
 	if err := fs.Parse(args); err != nil {
@@ -99,6 +102,7 @@ func ParseConfig(output io.Writer, name string, args ...string) (Config, error) 
 		Duration:    f.duration,
 		Jitter:      f.jitter,
 		NoKeepAlive: f.noKeepAlive,
+		NoProbe:     f.noProbe,
 		Percentiles: f.percentiles,
 	}, nil
 }
