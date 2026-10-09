@@ -9,7 +9,7 @@ import (
 )
 
 type SnapshotGetter interface {
-	GetSnapshot() Snapshot
+	getSnapshot() snapshot
 }
 
 type Printer struct {
@@ -37,7 +37,7 @@ func (r *Printer) getReportText() []byte {
 	now := time.Now()
 	if !now.Before(r.cacheDeadline) {
 		var b bytes.Buffer
-		_ = printReport(&b, r.stats.GetSnapshot())
+		_ = printReport(&b, r.stats.getSnapshot())
 		r.cache = b.Bytes()
 		r.cacheDeadline = time.Now().Add(500 * time.Millisecond)
 	}
@@ -64,7 +64,7 @@ var histogramMeta = []struct {
 	{Sub, "calc_rust_duration_ns", "Rust `sub` function call duration, nanoseconds"},
 }
 
-func printReport(b io.Writer, snap Snapshot) error {
+func printReport(b io.Writer, snap snapshot) error {
 	var err error
 	printf := func(f string, a ...any) {
 		if err != nil {

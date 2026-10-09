@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"log"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/pools"
@@ -20,7 +22,7 @@ type Sample struct {
 	SubDuration time.Duration
 }
 
-type Snapshot struct {
+type snapshot struct {
 	Histograms [durationKindSize]*hdrhistogram.Histogram
 	Requests   [requestKindSize][]uint64
 }
@@ -57,29 +59,45 @@ type durationsMsg struct {
 	vals []time.Duration
 }
 
+//go:generate enumer -type aggrCmdKind
+type aggrCmdKind uint8
+
+const (
+	aggrCmdData aggrCmdKind = iota
+	aggrCmdStop
+)
+
+type aggrCmd[T any] struct {
+	kind aggrCmdKind
+	data T
+}
+
 type Aggregator struct {
 	hists         [durationKindSize]*hdrhistogram.WindowedHistogram
 	reqs          [requestKindSize]*queue.Deque[uint64]
-	sampleCh      chan Sample
-	samplesCh     chan []Sample
+	sampleCh      chan aggrCmd[Sample]
+	samplesCh     chan aggrCmd[[]Sample]
 	samplesPool   *pools.BatchPool[Sample]
-	durationsCh   chan durationsMsg
+	durationsCh   chan aggrCmd[durationsMsg]
 	durationsPool *pools.BatchPool[time.Duration]
-	reqsCh        chan requestsMsg
-	getSnapCh     chan chan Snapshot
+	reqsCh        chan aggrCmd[requestsMsg]
+	getSnapCh     chan chan snapshot
 	stop          chan struct{}
 	done          chan struct{}
+	stopMu        sync.Mutex
+	stopped       atomic.Bool
+	snap          snapshot
 }
 
 func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], durationsPool *pools.BatchPool[time.Duration]) *Aggregator {
 	a := &Aggregator{
-		sampleCh:      make(chan Sample, queueSize),
-		samplesCh:     make(chan []Sample, queueSize),
+		sampleCh:      make(chan aggrCmd[Sample], queueSize),
+		samplesCh:     make(chan aggrCmd[[]Sample], queueSize),
 		samplesPool:   samplesPool,
-		durationsCh:   make(chan durationsMsg, queueSize),
+		durationsCh:   make(chan aggrCmd[durationsMsg], queueSize),
 		durationsPool: durationsPool,
-		reqsCh:        make(chan requestsMsg, queueSize),
-		getSnapCh:     make(chan chan Snapshot),
+		reqsCh:        make(chan aggrCmd[requestsMsg], queueSize),
+		getSnapCh:     make(chan chan snapshot),
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
 	}
@@ -110,77 +128,110 @@ func (a *Aggregator) countReqs(kind RequestKind, n uint64) {
 	a.reqs[kind].PushBack(a.reqs[kind].PopBack() + n)
 }
 
-func (a *Aggregator) recordDuration(hist *hdrhistogram.WindowedHistogram, duration time.Duration) {
+func (a *Aggregator) recordDuration(kind DurationKind, duration time.Duration) {
+	hist := a.hists[kind]
 	if err := hist.Current.RecordValue(duration.Nanoseconds()); err != nil {
 		log.Printf("Aggregator.recordDuration: %v", err)
+		return
 	}
 }
 
-func (a *Aggregator) recordDurations(hist *hdrhistogram.WindowedHistogram, durations []time.Duration) {
+func (a *Aggregator) recordDurations(kind DurationKind, durations []time.Duration) {
 	for _, duration := range durations {
-		a.recordDuration(hist, duration)
+		a.recordDuration(kind, duration)
 	}
 }
 
 func (a *Aggregator) recordSamples(batch []Sample) {
 	for _, sample := range batch {
-		a.recordDuration(a.hists[Add], sample.AddDuration)
-		a.recordDuration(a.hists[Sub], sample.SubDuration)
+		a.recordDuration(Add, sample.AddDuration)
+		a.recordDuration(Sub, sample.SubDuration)
 	}
 }
 
-func (a *Aggregator) closeChannels() {
-	close(a.sampleCh)
-	close(a.samplesCh)
-	close(a.durationsCh)
-	close(a.reqsCh)
-	close(a.getSnapCh)
-	close(a.done)
-}
-
-func (a *Aggregator) makeSnapshot() Snapshot {
-	var snap Snapshot
-	for kind := range a.hists {
-		snap.Histograms[kind] = a.hists[kind].Merge()
+func (a *Aggregator) makeSnapshot() {
+	snap := &a.snap
+	for kind, hist := range a.hists {
+		clone := hdrhistogram.New(histMinValue.Nanoseconds(), histMaxValue.Nanoseconds(), 3)
+		clone.Merge(hist.Merge())
+		snap.Histograms[kind] = clone
 	}
 	for kind := range a.reqs {
 		snap.Requests[kind] = a.reqs[kind].ToSlice()
 	}
-	return snap
 }
 
 func (a *Aggregator) serve() {
-	defer a.closeChannels()
+	defer close(a.done)
+
+	snapValid := false
+	defer func() {
+		if !snapValid {
+			a.makeSnapshot()
+		}
+	}()
 
 	rotateTk := time.NewTicker(rotateInterval)
 	defer rotateTk.Stop()
 
-	for {
+	inputs := 4
+
+	for inputs > 0 {
 		select {
 		case <-rotateTk.C:
 			a.rotate()
+			snapValid = false
 
-		case sample := <-a.sampleCh:
-			a.recordDuration(a.hists[Add], sample.AddDuration)
-			a.recordDuration(a.hists[Sub], sample.SubDuration)
+		case cmd := <-a.sampleCh: // 1
+			if cmd.kind == aggrCmdStop {
+				a.sampleCh = nil
+				inputs--
+				break
+			}
+			a.recordDuration(Add, cmd.data.AddDuration)
+			a.recordDuration(Sub, cmd.data.SubDuration)
+			snapValid = false
 
-		case samples := <-a.samplesCh:
-			a.recordSamples(samples)
+		case cmd := <-a.samplesCh: // 2
+			if cmd.kind == aggrCmdStop {
+				a.samplesCh = nil
+				inputs--
+				break
+			}
+			a.recordSamples(cmd.data)
+			snapValid = false
 			if a.samplesPool != nil {
-				a.samplesPool.Put(samples)
+				a.samplesPool.Put(cmd.data)
 			}
 
-		case msg := <-a.reqsCh:
+		case cmd := <-a.reqsCh: // 3
+			if cmd.kind == aggrCmdStop {
+				a.reqsCh = nil
+				inputs--
+				break
+			}
+			msg := &cmd.data
 			a.countReqs(msg.kind, msg.n)
+			snapValid = false
 
-		case msg := <-a.durationsCh:
-			a.recordDurations(a.hists[msg.kind], msg.vals)
+		case cmd := <-a.durationsCh: // 4
+			if cmd.kind == aggrCmdStop {
+				a.durationsCh = nil
+				inputs--
+				break
+			}
+			msg := &cmd.data
+			a.recordDurations(msg.kind, msg.vals)
+			snapValid = false
 			if a.durationsPool != nil {
 				a.durationsPool.Put(msg.vals)
 			}
 
 		case snapCh := <-a.getSnapCh:
-			snapCh <- a.makeSnapshot()
+			if !snapValid {
+				a.makeSnapshot()
+			}
+			snapCh <- a.snap
 
 		case <-a.stop:
 			return
@@ -188,35 +239,69 @@ func (a *Aggregator) serve() {
 	}
 }
 
-// RecordSample записывает семпл. После Stop паникует.
+// RecordSample записывает семпл. После Stop no-op.
 func (a *Aggregator) RecordSample(sample Sample) {
-	a.sampleCh <- sample
+	if a.stopped.Load() {
+		return
+	}
+	a.sampleCh <- aggrCmd[Sample]{data: sample}
 }
 
-// RecordSamples записывает партию семплов. После Stop паникует.
+// RecordSamples записывает партию семплов. После Stop no-op.
 func (a *Aggregator) RecordSamples(samples []Sample) {
-	a.samplesCh <- samples
+	if a.stopped.Load() {
+		return
+	}
+	a.samplesCh <- aggrCmd[[]Sample]{data: samples}
 }
 
-// RecordDurations записывает продолжительность вызовов kind финкции. После Stop паникует.
+// RecordDurations записывает продолжительность вызовов kind финкции. После Stop no-op.
 func (a *Aggregator) RecordDurations(kind DurationKind, durations []time.Duration) {
-	a.durationsCh <- durationsMsg{kind, durations}
+	if a.stopped.Load() {
+		return
+	}
+	a.durationsCh <- aggrCmd[durationsMsg]{data: durationsMsg{kind, durations}}
 }
 
-// CountRequests подсчитывает количество запросов. После Stop паникует.
+// CountRequests подсчитывает количество запросов. После Stop no-op.
 func (a *Aggregator) CountRequests(kind RequestKind, n uint64) {
-	a.reqsCh <- requestsMsg{kind, n}
+	if a.stopped.Load() {
+		return
+	}
+	a.reqsCh <- aggrCmd[requestsMsg]{data: requestsMsg{kind, n}}
 }
 
-// GetSnapshot возвращает текущий срез метрик. После Stop паникует.
-func (a *Aggregator) GetSnapshot() Snapshot {
-	snapCh := make(chan Snapshot, 1)
-	a.getSnapCh <- snapCh
-	return <-snapCh
+// getSnapshot возвращает текущий ro срез метрик.
+func (a *Aggregator) getSnapshot() snapshot {
+	select {
+	case <-a.done:
+		return a.snap
+	default:
+	}
+
+	snapCh := make(chan snapshot, 1)
+	select {
+	case a.getSnapCh <- snapCh:
+		return <-snapCh
+	case <-a.done:
+		return a.snap
+	}
 }
 
-// Stop останавливает сбор метрик. Паникует при повторном вызове.
+// Stop останавливает сбор метрик. Безопасен при повторном вызове.
 func (a *Aggregator) Stop() {
-	close(a.stop)
+	a.stopMu.Lock()
+	defer a.stopMu.Unlock()
+
+	if a.stopped.Load() {
+		<-a.done
+		return
+	}
+
+	a.stopped.Store(true)
+	a.sampleCh <- aggrCmd[Sample]{kind: aggrCmdStop}
+	a.samplesCh <- aggrCmd[[]Sample]{kind: aggrCmdStop}
+	a.durationsCh <- aggrCmd[durationsMsg]{kind: aggrCmdStop}
+	a.reqsCh <- aggrCmd[requestsMsg]{kind: aggrCmdStop}
 	<-a.done
 }

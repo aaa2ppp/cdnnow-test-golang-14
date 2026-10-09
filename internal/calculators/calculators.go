@@ -2,6 +2,8 @@ package calculators
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
@@ -22,6 +24,7 @@ type Values struct {
 }
 
 var ErrOverloaded = errors.New("calculator overloaded")
+var ErrStopped = errors.New("calculator stopped")
 
 type Calculator interface {
 	Calculate(num int64) error
@@ -149,10 +152,12 @@ type Async struct {
 	metricRecorder[metrics.Sample]
 
 	// server
-	numCh          chan int64
+	numCh          chan asyncCmd
 	valCh          chan Values
 	done           chan struct{}
 	ignoreOverload bool
+	stopMu         sync.Mutex
+	stopped        atomic.Bool
 }
 
 var _ AsyncCalculator = &Async{}
@@ -182,7 +187,7 @@ func NewAsync(
 			batchSize:   batchSize,
 		},
 
-		numCh:          make(chan int64, queueSize),
+		numCh:          make(chan asyncCmd, queueSize),
 		valCh:          make(chan Values),
 		done:           make(chan struct{}),
 		ignoreOverload: queueSize == 0,
@@ -192,12 +197,21 @@ func NewAsync(
 	return &c
 }
 
-func (c *Async) serve() {
-	defer func() {
-		close(c.valCh)
-		close(c.done)
-	}()
+//go:generate enumer -type asyncCmdKind
+type asyncCmdKind uint8
 
+const (
+	asyncCmdCalc asyncCmdKind = iota
+	asyncCmdStop
+)
+
+type asyncCmd struct {
+	kind asyncCmdKind
+	num  int64
+}
+
+func (c *Async) serve() {
+	defer close(c.done)
 	defer c.flush()
 
 	c.flushTm = time.NewTimer(time.Hour)
@@ -209,26 +223,34 @@ func (c *Async) serve() {
 		case <-c.flushTm.C:
 			c.flush()
 
-		case num, ok := <-c.numCh:
-			if !ok {
+		case cmd := <-c.numCh:
+			switch cmd.kind {
+			case asyncCmdCalc:
+				sample := c.calculate(cmd.num)
+				c.record(sample)
+			case asyncCmdStop:
 				return
 			}
-			sample := c.calculate(num)
-			c.record(sample)
 
 		case c.valCh <- c.vals:
 		}
 	}
 }
 
-// Calculate отправляет число на обработку. Паникует после Stop.
+// Calculate отправляет число на обработку. Возвращает ошибки:
+//   - ErrOverloaded - очередь переполнена
+//   - ErrStopped - был вызван метод Stop
 func (c *Async) Calculate(num int64) error {
+	if c.stopped.Load() {
+		return ErrStopped
+	}
+	cmd := asyncCmd{kind: asyncCmdCalc, num: num}
 	if c.ignoreOverload {
-		c.numCh <- num
+		c.numCh <- cmd
 		return nil
 	}
 	select {
-	case c.numCh <- num:
+	case c.numCh <- cmd:
 		return nil
 	default:
 		return ErrOverloaded
@@ -237,15 +259,26 @@ func (c *Async) Calculate(num int64) error {
 
 // Values возвращает текущие Sum и Sub. После Stop возвращает финальные значения.
 func (c *Async) Values() Values {
-	if vals, ok := <-c.valCh; ok {
+	select {
+	case vals := <-c.valCh:
 		return vals
+	case <-c.done:
+		return c.vals
 	}
-	return c.vals
 }
 
-// Stop останавливает калькулятор. Паникует при повторном вызове.
+// Stop останавливает калькулятор.
 func (c *Async) Stop() {
-	close(c.numCh)
+	c.stopMu.Lock()
+	defer c.stopMu.Unlock()
+
+	if c.stopped.Load() {
+		<-c.done
+		return
+	}
+
+	c.stopped.Store(true)
+	c.numCh <- asyncCmd{kind: asyncCmdStop}
 	<-c.done
 }
 
@@ -258,10 +291,12 @@ type asyncSingle struct {
 	metricRecorder[time.Duration]
 
 	// server
-	numCh          chan int64
+	numCh          chan asyncCmd
 	valCh          chan int64
 	done           chan struct{}
 	ignoreOverload bool
+	stopMu         sync.Mutex
+	stopped        atomic.Bool
 }
 
 // newAsyncSingle запускает калькулятор в отдельной горутине для заданного оператора.
@@ -287,7 +322,7 @@ func newAsyncSingle(
 			batchSize:   batchSize,
 		},
 
-		numCh:          make(chan int64, queueSize),
+		numCh:          make(chan asyncCmd, queueSize),
 		valCh:          make(chan int64),
 		done:           make(chan struct{}),
 		ignoreOverload: queueSize == 0,
@@ -304,11 +339,7 @@ func (c *asyncSingle) calculate(num int64) time.Duration {
 }
 
 func (c *asyncSingle) serve() {
-	defer func() {
-		close(c.valCh)
-		close(c.done)
-	}()
-
+	defer close(c.done)
 	defer c.flush()
 
 	c.flushTm = time.NewTimer(time.Hour)
@@ -320,27 +351,37 @@ func (c *asyncSingle) serve() {
 		case <-c.flushTm.C:
 			c.flush()
 
-		case num, ok := <-c.numCh:
-			if !ok {
+		case cmd := <-c.numCh:
+			switch cmd.kind {
+			case asyncCmdCalc:
+				sample := c.calculate(cmd.num)
+				c.record(sample)
+			case asyncCmdStop:
 				return
 			}
-			sample := c.calculate(num)
-			c.record(sample)
 
 		case c.valCh <- c.val:
 		}
 	}
 }
 
-// Calculate отправляет число на обработку. Паникует после Stop.
+// Calculate отправляет число на обработку. Возвращает ошибки:
+//   - ErrOverloaded - очередь переполнена
+//   - ErrStopped - был вызван метод Stop
 func (c *asyncSingle) Calculate(num int64) error {
+	if c.stopped.Load() {
+		return ErrStopped
+	}
+
+	cmd := asyncCmd{kind: asyncCmdCalc, num: num}
+
 	if c.ignoreOverload {
-		c.numCh <- num
+		c.numCh <- cmd
 		return nil
 	}
 
 	select {
-	case c.numCh <- num:
+	case c.numCh <- cmd:
 		return nil
 	default:
 		return ErrOverloaded
@@ -349,15 +390,26 @@ func (c *asyncSingle) Calculate(num int64) error {
 
 // Value возвращает текущее значение. После Stop возвращает финальное значение.
 func (c *asyncSingle) Value() int64 {
-	if val, ok := <-c.valCh; ok {
+	select {
+	case val := <-c.valCh:
 		return val
+	case <-c.done:
+		return c.val
 	}
-	return c.val
 }
 
-// Stop останавливает калькулятор. Паникует при повторном вызове.
+// Stop останавливает калькулятор. Безопасен при повторном вызове.
 func (c *asyncSingle) Stop() {
-	close(c.numCh)
+	c.stopMu.Lock()
+	defer c.stopMu.Unlock()
+
+	if c.stopped.Load() {
+		<-c.done
+		return
+	}
+
+	c.stopped.Store(true)
+	c.numCh <- asyncCmd{kind: asyncCmdStop}
 	<-c.done
 }
 

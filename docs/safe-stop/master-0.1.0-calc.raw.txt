@@ -1,0 +1,306 @@
+goos: linux
+goarch: amd64
+pkg: aaa2ppp/cdnnow-test-golang-14/internal/calculators
+cpu: Intel(R) Core(TM) i3-7100 CPU @ 3.90GHz
+BenchmarkSync            	   18087	     66282 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18106	     66326 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18045	     66184 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18062	     66350 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18066	     66293 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18080	     66273 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18012	     66280 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18012	     66248 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18074	     66443 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18092	     66362 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18091	     66414 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18073	     66308 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18087	     66162 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18094	     66221 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18098	     66164 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18121	     66138 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18074	     66187 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18043	     66173 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18116	     66163 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync            	   18072	     66162 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18063	     66349 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18092	     66369 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18030	     66285 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18078	     66268 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18051	     66321 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18037	     66322 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18009	     66325 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18037	     66432 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18112	     66325 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18078	     66334 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   17998	     66367 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18080	     66278 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18078	     66347 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18058	     66328 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18063	     66296 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18009	     66392 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18064	     66407 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18010	     66369 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18010	     66362 ns/op	       0 B/op	       0 allocs/op
+BenchmarkSync-2          	   18050	     66309 ns/op	       0 B/op	       0 allocs/op
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+BenchmarkAsync           	   17968	     66358 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   17965	     66401 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18024	     66503 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18051	     66318 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18094	     66336 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18056	     66396 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18068	     66309 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18084	     66376 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   17998	     66480 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18054	     66299 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18070	     66522 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18084	     66378 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18080	     66285 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18038	     66385 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18040	     66308 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18093	     66292 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18016	     66321 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18033	     66361 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18052	     66403 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync           	   18069	     66326 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17641	     67864 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17716	     67832 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17678	     67745 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17664	     67885 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17623	     67902 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17671	     67775 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17721	     67952 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17608	     67865 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17713	     67835 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17682	     67941 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17716	     67869 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17712	     67897 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17653	     67997 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17695	     67706 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17676	     67708 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17620	     67809 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17671	     67843 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17635	     67957 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17464	     69238 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsync-2         	   17719	     68081 ns/op	       0 B/op	       0 allocs/op
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+BenchmarkAsyncSingle/Add_C_lib           	   23686	     50685 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23626	     50730 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23630	     50710 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23559	     50750 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23652	     50721 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23629	     50701 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23704	     50726 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23678	     50716 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23718	     50642 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23589	     50733 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23618	     50706 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23613	     50674 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23596	     50575 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23686	     50738 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23536	     50705 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23659	     50695 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23638	     50660 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23688	     50687 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23571	     50625 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib           	   23643	     50771 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22953	     52206 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   23024	     52139 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   23004	     52208 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22941	     52334 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   23002	     52147 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22881	     52200 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22968	     52106 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   23004	     52169 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22928	     52255 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22998	     52225 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   23036	     52131 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22927	     52109 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22971	     52195 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22933	     52181 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22995	     52100 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22941	     52245 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   23036	     52207 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   23024	     52110 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   23028	     52209 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Add_C_lib-2         	   22923	     52205 ns/op	       0 B/op	       0 allocs/op
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75459	     15960 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75532	     15848 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75410	     15866 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75339	     15879 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   74742	     15891 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75132	     15857 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   74810	     15847 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75336	     15858 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75706	     15824 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75790	     15859 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75427	     15826 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75138	     15876 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75651	     15828 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75568	     15832 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75705	     15836 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75686	     15858 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   74864	     15861 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75526	     15853 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75867	     15832 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib        	   75099	     15849 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   68611	     17374 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69160	     17269 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69235	     17410 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69254	     17295 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69157	     17325 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69758	     17350 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69262	     17424 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69744	     17373 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69408	     17382 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69055	     17403 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   68962	     17381 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69650	     17340 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69396	     17351 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69033	     17328 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69272	     17311 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69495	     17420 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69171	     17402 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69818	     17374 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   68748	     17348 ns/op	       0 B/op	       0 allocs/op
+BenchmarkAsyncSingle/Sub_Rust_lib-2      	   69362	     17372 ns/op	       0 B/op	       0 allocs/op
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+BenchmarkParallel                        	   18348	     65416 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18636	     65371 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18403	     64795 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18805	     64062 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18451	     65582 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18235	     65338 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18344	     64195 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18493	     65282 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18382	     65076 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18585	     65503 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18344	     65404 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18272	     65222 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18543	     64448 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18441	     64302 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18315	     65000 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18286	     64095 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18456	     64689 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18472	     65233 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18278	     65180 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel                        	   18536	     65107 ns/op	       1 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22958	     52506 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   23074	     52491 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22902	     52149 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22866	     52585 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22840	     52368 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22861	     52327 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   23071	     52619 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22954	     52196 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22885	     52234 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22974	     52729 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22777	     52442 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22839	     52414 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22953	     52421 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22876	     52516 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22893	     52424 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22927	     52559 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22960	     52417 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22840	     52375 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22933	     52471 ns/op	       0 B/op	       0 allocs/op
+BenchmarkParallel-2                      	   22940	     52457 ns/op	       0 B/op	       0 allocs/op
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+PASS
+ok  	aaa2ppp/cdnnow-test-golang-14/internal/calculators	520.603s

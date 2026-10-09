@@ -58,6 +58,8 @@ lint: ## run linters
 
 test: build-libs ## run tests
 	CGO_ENABLED=1 go test -tags=test ./...
+	CGO_ENABLED=1 go test -race -tags=test ./internal/calculators
+	CGO_ENABLED=1 go test -race -tags=test ./internal/metrics
 
 
 .PHONY: build-libs
@@ -93,7 +95,7 @@ build: build-libs build-server build-generator
 
 .PHONY: bench
 bench: build-libs ## run benchmarks
-	CGO_ENABLED=1 go test -tags=test -bench . -benchmem ./...
+	CGO_ENABLED=1 go test -run '^$' -tags=test -bench . -benchmem ./...
 
 .PHONY: clean
 clean: ## remove bin and temp files
