@@ -61,7 +61,7 @@ func TestDedup(t *testing.T) {
 		lg.Printf("message")
 		time.Sleep(10 * time.Millisecond)
 		lg.Printf("message")
-		runtime.Gosched()
+		time.Sleep(10 * time.Millisecond)
 		be.Equal(t, len(m.b), 2)
 		be.Equal(t, m.b, []string{"message", "message"})
 	})
