@@ -16,6 +16,7 @@ const histMinValue = 1 * time.Microsecond
 const histMaxValue = 100 * time.Millisecond
 const histBuckets = 60
 const rotateInterval = time.Second
+const snapshotTTL = 10 * time.Millisecond // makeSnapshot() 30-100us
 
 type Sample struct {
 	AddDuration time.Duration
@@ -23,8 +24,11 @@ type Sample struct {
 }
 
 type snapshot struct {
+	Version    uint64
 	Histograms [durationKindSize]*hdrhistogram.Histogram
 	Requests   [requestKindSize][]uint64
+	deadline   time.Time
+	valid      bool
 }
 
 //go:generate enumer -type RequestKind
@@ -81,12 +85,13 @@ type Aggregator struct {
 	durationsCh   chan aggrCmd[durationsMsg]
 	durationsPool *pools.BatchPool[time.Duration]
 	reqsCh        chan aggrCmd[requestsMsg]
-	getSnapCh     chan chan snapshot
 	stop          chan struct{}
 	done          chan struct{}
 	stopMu        sync.Mutex
 	stopped       atomic.Bool
-	snap          snapshot
+	snapMu        sync.Mutex
+	snap          *snapshot
+	snapCh        chan struct{}
 }
 
 func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], durationsPool *pools.BatchPool[time.Duration]) *Aggregator {
@@ -97,9 +102,10 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 		durationsCh:   make(chan aggrCmd[durationsMsg], queueSize),
 		durationsPool: durationsPool,
 		reqsCh:        make(chan aggrCmd[requestsMsg], queueSize),
-		getSnapCh:     make(chan chan snapshot),
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
+		snap:          &snapshot{},
+		snapCh:        make(chan struct{}),
 	}
 
 	for i := range a.hists {
@@ -108,6 +114,7 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 
 	for i := range a.reqs {
 		a.reqs[i] = queue.NewDequeFrom(make([]uint64, histBuckets))
+		a.snap.Requests[i] = make([]uint64, histBuckets)
 	}
 
 	go a.serve()
@@ -150,37 +157,30 @@ func (a *Aggregator) recordSamples(batch []Sample) {
 }
 
 func (a *Aggregator) makeSnapshot() {
-	snap := &a.snap
+	a.snap.Version++
 	for kind, hist := range a.hists {
-		clone := hdrhistogram.New(histMinValue.Nanoseconds(), histMaxValue.Nanoseconds(), 3)
-		clone.Merge(hist.Merge())
-		snap.Histograms[kind] = clone
+		a.snap.Histograms[kind] = hist.Merge()
 	}
 	for kind := range a.reqs {
-		snap.Requests[kind] = a.reqs[kind].ToSlice()
+		buf := a.snap.Requests[kind]
+		a.snap.Requests[kind] = a.reqs[kind].ToSlice(buf)
 	}
+	a.snap.deadline = time.Now().Add(snapshotTTL)
+	a.snap.valid = true
 }
 
 func (a *Aggregator) serve() {
 	defer close(a.done)
 
-	snapValid := false
-	defer func() {
-		if !snapValid {
-			a.makeSnapshot()
-		}
-	}()
-
 	rotateTk := time.NewTicker(rotateInterval)
 	defer rotateTk.Stop()
 
 	inputs := 4
-
 	for inputs > 0 {
 		select {
 		case <-rotateTk.C:
 			a.rotate()
-			snapValid = false
+			a.snap.valid = false
 
 		case cmd := <-a.sampleCh: // 1
 			if cmd.kind == aggrCmdStop {
@@ -190,7 +190,7 @@ func (a *Aggregator) serve() {
 			}
 			a.recordDuration(Add, cmd.data.AddDuration)
 			a.recordDuration(Sub, cmd.data.SubDuration)
-			snapValid = false
+			a.snap.valid = false
 
 		case cmd := <-a.samplesCh: // 2
 			if cmd.kind == aggrCmdStop {
@@ -199,7 +199,7 @@ func (a *Aggregator) serve() {
 				break
 			}
 			a.recordSamples(cmd.data)
-			snapValid = false
+			a.snap.valid = false
 			if a.samplesPool != nil {
 				a.samplesPool.Put(cmd.data)
 			}
@@ -212,7 +212,7 @@ func (a *Aggregator) serve() {
 			}
 			msg := &cmd.data
 			a.countReqs(msg.kind, msg.n)
-			snapValid = false
+			a.snap.valid = false
 
 		case cmd := <-a.durationsCh: // 4
 			if cmd.kind == aggrCmdStop {
@@ -222,16 +222,17 @@ func (a *Aggregator) serve() {
 			}
 			msg := &cmd.data
 			a.recordDurations(msg.kind, msg.vals)
-			snapValid = false
+			a.snap.valid = false
 			if a.durationsPool != nil {
 				a.durationsPool.Put(msg.vals)
 			}
 
-		case snapCh := <-a.getSnapCh:
-			if !snapValid {
+		case <-a.snapCh:
+			now := time.Now()
+			if !a.snap.valid && !now.Before(a.snap.deadline) {
 				a.makeSnapshot()
 			}
-			snapCh <- a.snap
+			a.snapCh <- struct{}{}
 
 		case <-a.stop:
 			return
@@ -271,21 +272,24 @@ func (a *Aggregator) CountRequests(kind RequestKind, n uint64) {
 	a.reqsCh <- aggrCmd[requestsMsg]{data: requestsMsg{kind, n}}
 }
 
-// getSnapshot возвращает текущий ro срез метрик.
-func (a *Aggregator) getSnapshot() snapshot {
+// getSnapshot возвращает текущий ro снимок метрик посредством обратного вызова.
+// Снимок действителен только во время обратного вызова.
+// fn вызывается под внутренним мьютексом. Из fn нельзя повторно вызывать getSnapshot.
+// Это вызовет самоблокировку.
+func (a *Aggregator) getSnapshot(fn func(snap *snapshot)) {
+	a.snapMu.Lock()
+	defer a.snapMu.Unlock()
+
 	select {
+	case a.snapCh <- struct{}{}:
+		<-a.snapCh
 	case <-a.done:
-		return a.snap
-	default:
+		if !a.snap.valid {
+			a.makeSnapshot()
+		}
 	}
 
-	snapCh := make(chan snapshot, 1)
-	select {
-	case a.getSnapCh <- snapCh:
-		return <-snapCh
-	case <-a.done:
-		return a.snap
-	}
+	fn(a.snap)
 }
 
 // Stop останавливает сбор метрик. Безопасен при повторном вызове.

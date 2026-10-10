@@ -101,22 +101,26 @@ func (d *Deque[T]) Set(idx int, val T) {
 }
 
 // ToSlice возвращает снапшот очереди (копия)
-func (d *Deque[T]) ToSlice() []T {
+func (d *Deque[T]) ToSlice(buf []T) []T {
 	if d.size == 0 {
-		return nil
+		return buf[:0]
+	}
+	if cap(buf) < d.size {
+		buf = make([]T, d.size)
+	} else {
+		buf = buf[:d.size]
 	}
 	back := d.front + d.size
 	if back >= len(d.buf) {
 		back -= len(d.buf)
 	}
-	slice := make([]T, d.size)
 	if d.front < back {
-		copy(slice, d.buf[d.front:back])
+		copy(buf, d.buf[d.front:back])
 	} else {
-		n := copy(slice, d.buf[d.front:])
-		copy(slice[n:], d.buf[:back])
+		n := copy(buf, d.buf[d.front:])
+		copy(buf[n:], d.buf[:back])
 	}
-	return slice
+	return buf
 }
 
 func (d *Deque[T]) Reset() {

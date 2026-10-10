@@ -22,9 +22,9 @@ func TestAggregator_RecordAfterStop_NoPanicNoBlock(t *testing.T) {
 		defer close(done)
 		a.RecordSample(Sample{})
 		a.RecordSamples([]Sample{{}})
-		a.RecordDurations(0, []time.Duration{time.Millisecond})
+		a.RecordDurations(0, []time.Duration{0})
 		a.CountRequests(0, 1)
-		_ = a.getSnapshot()
+		a.getSnapshot(func(snap *snapshot) {})
 	}()
 
 	select {
@@ -42,7 +42,7 @@ func TestAggregator_GetSnapshotAfterStop(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = a.getSnapshot()
+		a.getSnapshot(func(snap *snapshot) {})
 	}()
 
 	select {
@@ -59,7 +59,10 @@ func TestAggregator_ConcurrentStopAndRecord(t *testing.T) {
 	stop := make(chan struct{})
 
 	for i := 0; i < 10; i++ {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var k uint
 			for {
 				select {
 				case <-stop:
@@ -67,17 +70,38 @@ func TestAggregator_ConcurrentStopAndRecord(t *testing.T) {
 				default:
 					a.RecordSample(Sample{})
 					a.RecordSamples([]Sample{{}})
-					a.RecordDurations(0, []time.Duration{time.Millisecond})
-					a.CountRequests(0, 1)
-					_ = a.getSnapshot()
+					a.RecordDurations(DurationKind(k)%durationKindSize, []time.Duration{0})
+					a.CountRequests(RequestKind(k)%requestKindSize, 1)
 				}
+				k++
 			}
-		})
+		}()
 	}
 
-	time.Sleep(10 * time.Millisecond)
-	a.Stop()
-	close(stop)
+	var x int
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					a.getSnapshot(func(snap *snapshot) { x = x + 1 })
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(100 * time.Millisecond)
+		a.Stop()
+		time.Sleep(100 * time.Millisecond)
+		close(stop)
+	}()
 
 	done := make(chan struct{})
 	go func() {
@@ -90,4 +114,46 @@ func TestAggregator_ConcurrentStopAndRecord(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("concurrent Record/Stop blocked")
 	}
+
+	_ = x
+}
+
+func BenchmarkRecordSample(b *testing.B) {
+	a := NewAggregator(0, nil, nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a.RecordSample(Sample{})
+	}
+	a.Stop()
+}
+
+func BenchmarkCountRequests(b *testing.B) {
+	a := NewAggregator(0, nil, nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a.CountRequests(0, 1)
+	}
+	a.Stop()
+}
+
+func BenchmarkRecordSamples(b *testing.B) {
+	a := NewAggregator(0, nil, nil)
+
+	samples := make([]Sample, 1024)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a.RecordSamples(samples)
+	}
+	a.Stop()
+}
+
+func BenchmarkMakeSnapshot(b *testing.B) {
+	a := NewAggregator(0, nil, nil)
+	samples := []Sample{{time.Millisecond, time.Millisecond}}
+	a.RecordSamples(samples)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a.makeSnapshot()
+	}
+	a.Stop()
 }
