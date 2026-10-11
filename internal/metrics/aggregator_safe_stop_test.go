@@ -118,6 +118,30 @@ func TestAggregator_ConcurrentStopAndRecord(t *testing.T) {
 	_ = x
 }
 
+func Benchmark_recordDuration(b *testing.B) {
+	a := NewAggregator(0, nil, nil)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		a.recordDuration(0, 1)
+	}
+	b.StopTimer()
+	a.Stop()
+}
+
+//go:noinline
+func recordToSlice(s []time.Duration, i int, v time.Duration) {
+	s[i%len(s)] = v
+}
+
+func Benchmark_recordDurationToSlice(b *testing.B) {
+	s := make([]time.Duration, 1024)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		recordToSlice(s, i, time.Duration(i))
+	}
+	_ = s
+}
+
 func BenchmarkRecordSample(b *testing.B) {
 	a := NewAggregator(0, nil, nil)
 	b.ResetTimer()
