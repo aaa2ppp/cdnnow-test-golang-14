@@ -8,18 +8,21 @@ import (
 	"time"
 )
 
-type SnapshotGetter interface {
-	GetSnapshot() Snapshot
+const reportCacheTTL = 500 * time.Millisecond
+
+type snapshotGetter interface {
+	getSnapshot(fn func(*snapshot))
 }
 
 type Printer struct {
-	stats         SnapshotGetter
+	stats         snapshotGetter
 	mu            sync.Mutex
 	cache         []byte
 	cacheDeadline time.Time
+	cacheVersion  uint64
 }
 
-func NewPrinter(stats SnapshotGetter) *Printer {
+func NewPrinter(stats snapshotGetter) *Printer {
 	return &Printer{
 		stats: stats,
 	}
@@ -34,13 +37,19 @@ func (r *Printer) getReportText() []byte {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	now := time.Now()
-	if !now.Before(r.cacheDeadline) {
-		var b bytes.Buffer
-		_ = printReport(&b, r.stats.GetSnapshot())
-		r.cache = b.Bytes()
-		r.cacheDeadline = time.Now().Add(500 * time.Millisecond)
+	if !time.Now().Before(r.cacheDeadline) {
+		r.stats.getSnapshot(func(snap *snapshot) {
+			if r.cacheVersion == snap.Version {
+				return
+			}
+			var b bytes.Buffer
+			_ = printReport(&b, snap)
+			r.cache = b.Bytes()
+			r.cacheVersion = snap.Version
+		})
+		r.cacheDeadline = time.Now().Add(reportCacheTTL)
 	}
+
 	return r.cache
 }
 
@@ -64,7 +73,7 @@ var histogramMeta = []struct {
 	{Sub, "calc_rust_duration_ns", "Rust `sub` function call duration, nanoseconds"},
 }
 
-func printReport(b io.Writer, snap Snapshot) error {
+func printReport(b io.Writer, snap *snapshot) error {
 	var err error
 	printf := func(f string, a ...any) {
 		if err != nil {

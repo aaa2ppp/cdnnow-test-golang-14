@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/pools"
@@ -14,15 +15,19 @@ const histMinValue = 1 * time.Microsecond
 const histMaxValue = 100 * time.Millisecond
 const histBuckets = 60
 const rotateInterval = time.Second
+const snapshotTTL = 10 * time.Millisecond // makeSnapshot() 30-100us
 
 type Sample struct {
 	AddDuration time.Duration
 	SubDuration time.Duration
 }
 
-type Snapshot struct {
+type snapshot struct {
+	Version    uint64
 	Histograms [durationKindSize]*hdrhistogram.Histogram
 	Requests   [requestKindSize][]uint64
+	deadline   time.Time
+	valid      bool
 }
 
 //go:generate enumer -type RequestKind
@@ -66,7 +71,9 @@ type Aggregator struct {
 	durationsCh   chan durationsMsg
 	durationsPool *pools.BatchPool[time.Duration]
 	reqsCh        chan requestsMsg
-	getSnapCh     chan chan Snapshot
+	snapMu        sync.Mutex
+	snap          snapshot
+	snapCh        chan struct{}
 	stop          chan struct{}
 	done          chan struct{}
 }
@@ -79,7 +86,7 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 		durationsCh:   make(chan durationsMsg, queueSize),
 		durationsPool: durationsPool,
 		reqsCh:        make(chan requestsMsg, queueSize),
-		getSnapCh:     make(chan chan Snapshot),
+		snapCh:        make(chan struct{}),
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
 	}
@@ -90,6 +97,7 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 
 	for i := range a.reqs {
 		a.reqs[i] = queue.NewDequeFrom(make([]uint64, histBuckets))
+		a.snap.Requests[i] = make([]uint64, histBuckets)
 	}
 
 	go a.serve()
@@ -134,19 +142,20 @@ func (a *Aggregator) closeChannels() {
 	close(a.samplesCh)
 	close(a.durationsCh)
 	close(a.reqsCh)
-	close(a.getSnapCh)
 	close(a.done)
 }
 
-func (a *Aggregator) makeSnapshot() Snapshot {
-	var snap Snapshot
-	for kind := range a.hists {
-		snap.Histograms[kind] = a.hists[kind].Merge()
+func (a *Aggregator) makeSnapshot() {
+	a.snap.Version++
+	for kind, hist := range a.hists {
+		a.snap.Histograms[kind] = hist.Merge()
 	}
 	for kind := range a.reqs {
-		snap.Requests[kind] = a.reqs[kind].ToSlice()
+		buf := a.snap.Requests[kind]
+		a.snap.Requests[kind] = a.reqs[kind].ToSlice(buf)
 	}
-	return snap
+	a.snap.deadline = time.Now().Add(snapshotTTL)
+	a.snap.valid = true
 }
 
 func (a *Aggregator) serve() {
@@ -159,28 +168,37 @@ func (a *Aggregator) serve() {
 		select {
 		case <-rotateTk.C:
 			a.rotate()
+			a.snap.valid = false
 
 		case sample := <-a.sampleCh:
 			a.recordDuration(a.hists[Add], sample.AddDuration)
 			a.recordDuration(a.hists[Sub], sample.SubDuration)
+			a.snap.valid = false
 
 		case samples := <-a.samplesCh:
 			a.recordSamples(samples)
+			a.snap.valid = false
 			if a.samplesPool != nil {
 				a.samplesPool.Put(samples)
 			}
 
 		case msg := <-a.reqsCh:
 			a.countReqs(msg.kind, msg.n)
+			a.snap.valid = false
 
 		case msg := <-a.durationsCh:
 			a.recordDurations(a.hists[msg.kind], msg.vals)
+			a.snap.valid = false
 			if a.durationsPool != nil {
 				a.durationsPool.Put(msg.vals)
 			}
 
-		case snapCh := <-a.getSnapCh:
-			snapCh <- a.makeSnapshot()
+		case <-a.snapCh:
+			now := time.Now()
+			if !a.snap.valid && !now.Before(a.snap.deadline) {
+				a.makeSnapshot()
+			}
+			a.snapCh <- struct{}{}
 
 		case <-a.stop:
 			return
@@ -208,11 +226,24 @@ func (a *Aggregator) CountRequests(kind RequestKind, n uint64) {
 	a.reqsCh <- requestsMsg{kind, n}
 }
 
-// GetSnapshot возвращает текущий срез метрик. После Stop паникует.
-func (a *Aggregator) GetSnapshot() Snapshot {
-	snapCh := make(chan Snapshot, 1)
-	a.getSnapCh <- snapCh
-	return <-snapCh
+// getSnapshot возвращает текущий ro снимок метрик посредством обратного вызова.
+// Снимок действителен только во время обратного вызова.
+// fn вызывается под внутренним мьютексом. Из fn нельзя повторно вызывать getSnapshot.
+// Это вызовет самоблокировку.
+func (a *Aggregator) getSnapshot(fn func(snap *snapshot)) {
+	a.snapMu.Lock()
+	defer a.snapMu.Unlock()
+
+	select {
+	case a.snapCh <- struct{}{}:
+		<-a.snapCh
+	case <-a.done:
+		if !a.snap.valid {
+			a.makeSnapshot()
+		}
+	}
+
+	fn(&a.snap)
 }
 
 // Stop останавливает сбор метрик. Паникует при повторном вызове.

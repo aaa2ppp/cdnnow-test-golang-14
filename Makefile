@@ -58,6 +58,7 @@ lint: ## run linters
 
 test: build-libs ## run tests
 	CGO_ENABLED=1 go test -tags=test ./...
+	CGO_ENABLED=1 go test -tags=test -race ./internal/metrics
 
 
 .PHONY: build-libs
