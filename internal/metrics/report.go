@@ -88,7 +88,7 @@ func printReport(b io.Writer, snap *snapshot) error {
 		printf("# TYPE %s gauge\n", meta.name)
 		rps := snap.Requests[meta.kind]
 		for i := len(rps) - 1; i >= 0; i-- {
-			sec := i - (len(rps) - 1)
+			sec := i - len(rps)
 			val := rps[i]
 			printf("%s{second=\"%d\"} %d\n", meta.name, sec, val)
 		}

@@ -43,11 +43,6 @@ const (
 	requestKindSize // держать последним
 )
 
-type requestsMsg struct {
-	kind RequestKind
-	n    uint64
-}
-
 //go:generate enumer -type DurationKind
 type DurationKind uint8
 
@@ -79,12 +74,12 @@ type aggrCmd[T any] struct {
 type Aggregator struct {
 	hists         [durationKindSize]*hdrhistogram.WindowedHistogram
 	reqs          [requestKindSize]*queue.Deque[uint64]
+	cnts          [requestKindSize]atomic.Uint64
 	sampleCh      chan aggrCmd[Sample]
 	samplesCh     chan aggrCmd[[]Sample]
 	samplesPool   *pools.BatchPool[Sample]
 	durationsCh   chan aggrCmd[durationsMsg]
 	durationsPool *pools.BatchPool[time.Duration]
-	reqsCh        chan aggrCmd[requestsMsg]
 	stop          chan struct{}
 	done          chan struct{}
 	stopMu        sync.Mutex
@@ -101,7 +96,6 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 		samplesPool:   samplesPool,
 		durationsCh:   make(chan aggrCmd[durationsMsg], queueSize),
 		durationsPool: durationsPool,
-		reqsCh:        make(chan aggrCmd[requestsMsg], queueSize),
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
 		snap:          &snapshot{},
@@ -122,17 +116,15 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 }
 
 func (a *Aggregator) rotate() {
-	for _, q := range a.reqs {
+	for kind, q := range a.reqs {
+		n := a.cnts[kind].Load()
+		a.cnts[kind].Add(-n)
 		q.PopFront()
-		q.PushBack(0)
+		q.PushBack(n)
 	}
 	for _, h := range a.hists {
 		h.Rotate()
 	}
-}
-
-func (a *Aggregator) countReqs(kind RequestKind, n uint64) {
-	a.reqs[kind].PushBack(a.reqs[kind].PopBack() + n)
 }
 
 func (a *Aggregator) recordDuration(kind DurationKind, duration time.Duration) {
@@ -175,7 +167,7 @@ func (a *Aggregator) serve() {
 	rotateTk := time.NewTicker(rotateInterval)
 	defer rotateTk.Stop()
 
-	inputs := 4
+	inputs := 3
 	for inputs > 0 {
 		select {
 		case <-rotateTk.C:
@@ -204,17 +196,7 @@ func (a *Aggregator) serve() {
 				a.samplesPool.Put(cmd.data)
 			}
 
-		case cmd := <-a.reqsCh: // 3
-			if cmd.kind == aggrCmdStop {
-				a.reqsCh = nil
-				inputs--
-				break
-			}
-			msg := &cmd.data
-			a.countReqs(msg.kind, msg.n)
-			a.snap.valid = false
-
-		case cmd := <-a.durationsCh: // 4
+		case cmd := <-a.durationsCh: // 3
 			if cmd.kind == aggrCmdStop {
 				a.durationsCh = nil
 				inputs--
@@ -269,7 +251,7 @@ func (a *Aggregator) CountRequests(kind RequestKind, n uint64) {
 	if a.stopped.Load() {
 		return
 	}
-	a.reqsCh <- aggrCmd[requestsMsg]{data: requestsMsg{kind, n}}
+	a.cnts[kind].Add(n)
 }
 
 // getSnapshot возвращает текущий ro снимок метрик посредством обратного вызова.
@@ -306,6 +288,5 @@ func (a *Aggregator) Stop() {
 	a.sampleCh <- aggrCmd[Sample]{kind: aggrCmdStop}
 	a.samplesCh <- aggrCmd[[]Sample]{kind: aggrCmdStop}
 	a.durationsCh <- aggrCmd[durationsMsg]{kind: aggrCmdStop}
-	a.reqsCh <- aggrCmd[requestsMsg]{kind: aggrCmdStop}
 	<-a.done
 }
