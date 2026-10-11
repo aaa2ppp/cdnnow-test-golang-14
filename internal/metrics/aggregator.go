@@ -2,6 +2,8 @@ package metrics
 
 import (
 	"log"
+	"math"
+	"math/bits"
 	"sync"
 	"time"
 
@@ -62,9 +64,40 @@ type durationsMsg struct {
 	vals []time.Duration
 }
 
+type histOverflow struct {
+	count   int64
+	sumLog2 int64
+	max_    int64
+}
+
+// Для оценки абсолютная точность не требуется
+func log2u(x uint64) int64 {
+	return int64(bits.Len64(x) - 1)
+}
+
+func (ho *histOverflow) add(x time.Duration) {
+	ho.count++
+	ho.sumLog2 += log2u(uint64(x))
+	ho.max_ = max(ho.max_, int64(x))
+}
+
+func (ho *histOverflow) max() time.Duration {
+	return time.Duration(ho.max_)
+}
+
+// При count=0 не имеет смысла, возвращает 0
+func (ho *histOverflow) geomean() time.Duration {
+	if ho.count == 0 {
+		return 0
+	}
+	meanLog2 := float64(ho.sumLog2) / float64(ho.count)
+	return time.Duration(math.Round(math.Exp2(meanLog2)))
+}
+
 type Aggregator struct {
 	hists         [durationKindSize]*hdrhistogram.WindowedHistogram
 	reqs          [requestKindSize]*queue.Deque[uint64]
+	over          histOverflow
 	sampleCh      chan Sample
 	samplesCh     chan []Sample
 	samplesPool   *pools.BatchPool[Sample]
@@ -105,6 +138,10 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 }
 
 func (a *Aggregator) rotate() {
+	if a.over.count > 0 {
+		log.Printf("Aggregator.rotate: duration overflow: count=%d, max=%v, geomean=%v", a.over.count, a.over.max(), a.over.geomean())
+		a.over = histOverflow{}
+	}
 	for _, q := range a.reqs {
 		q.PopFront()
 		q.PushBack(0)
@@ -120,7 +157,7 @@ func (a *Aggregator) countReqs(kind RequestKind, n uint64) {
 
 func (a *Aggregator) recordDuration(hist *hdrhistogram.WindowedHistogram, duration time.Duration) {
 	if err := hist.Current.RecordValue(duration.Nanoseconds()); err != nil {
-		log.Printf("Aggregator.recordDuration: %v", err)
+		a.over.add(duration)
 	}
 }
 
