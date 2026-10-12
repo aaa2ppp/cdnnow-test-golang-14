@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/bits"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/pools"
@@ -43,11 +44,6 @@ const (
 
 	requestKindSize // держать последним
 )
-
-type requestsMsg struct {
-	kind RequestKind
-	n    uint64
-}
 
 //go:generate enumer -type DurationKind
 type DurationKind uint8
@@ -97,13 +93,13 @@ func (ho *histOverflow) geomean() time.Duration {
 type Aggregator struct {
 	hists         [durationKindSize]*hdrhistogram.WindowedHistogram
 	reqs          [requestKindSize]*queue.Deque[uint64]
+	cnts          [requestKindSize]atomic.Uint64
 	over          histOverflow
 	sampleCh      chan Sample
 	samplesCh     chan []Sample
 	samplesPool   *pools.BatchPool[Sample]
 	durationsCh   chan durationsMsg
 	durationsPool *pools.BatchPool[time.Duration]
-	reqsCh        chan requestsMsg
 	snapMu        sync.Mutex
 	snap          snapshot
 	snapCh        chan struct{}
@@ -118,7 +114,6 @@ func NewAggregator(queueSize int, samplesPool *pools.BatchPool[Sample], duration
 		samplesPool:   samplesPool,
 		durationsCh:   make(chan durationsMsg, queueSize),
 		durationsPool: durationsPool,
-		reqsCh:        make(chan requestsMsg, queueSize),
 		snapCh:        make(chan struct{}),
 		stop:          make(chan struct{}),
 		done:          make(chan struct{}),
@@ -142,17 +137,13 @@ func (a *Aggregator) rotate() {
 		log.Printf("Aggregator.rotate: duration overflow: count=%d, max=%v, geomean=%v", a.over.count, a.over.max(), a.over.geomean())
 		a.over = histOverflow{}
 	}
-	for _, q := range a.reqs {
+	for kind, q := range a.reqs {
 		q.PopFront()
-		q.PushBack(0)
+		q.PushBack(a.cnts[kind].Swap(0))
 	}
 	for _, h := range a.hists {
 		h.Rotate()
 	}
-}
-
-func (a *Aggregator) countReqs(kind RequestKind, n uint64) {
-	a.reqs[kind].PushBack(a.reqs[kind].PopBack() + n)
 }
 
 func (a *Aggregator) recordDuration(hist *hdrhistogram.WindowedHistogram, duration time.Duration) {
@@ -178,7 +169,6 @@ func (a *Aggregator) closeChannels() {
 	close(a.sampleCh)
 	close(a.samplesCh)
 	close(a.durationsCh)
-	close(a.reqsCh)
 	close(a.done)
 }
 
@@ -219,10 +209,6 @@ func (a *Aggregator) serve() {
 				a.samplesPool.Put(samples)
 			}
 
-		case msg := <-a.reqsCh:
-			a.countReqs(msg.kind, msg.n)
-			a.snap.valid = false
-
 		case msg := <-a.durationsCh:
 			a.recordDurations(a.hists[msg.kind], msg.vals)
 			a.snap.valid = false
@@ -258,9 +244,9 @@ func (a *Aggregator) RecordDurations(kind DurationKind, durations []time.Duratio
 	a.durationsCh <- durationsMsg{kind, durations}
 }
 
-// CountRequests подсчитывает количество запросов. После Stop паникует.
+// CountRequests подсчитывает количество запросов.
 func (a *Aggregator) CountRequests(kind RequestKind, n uint64) {
-	a.reqsCh <- requestsMsg{kind, n}
+	a.cnts[kind].Add(n)
 }
 
 // getSnapshot возвращает текущий ro снимок метрик посредством обратного вызова.
