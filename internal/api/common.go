@@ -3,7 +3,7 @@ package api
 import (
 	"io"
 
-	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
+	"aaa2ppp/cdnnow-test-golang-14/internal/domain"
 )
 
 type Service interface {
@@ -22,7 +22,7 @@ type Calculator interface {
 }
 
 type RequestsCounter interface {
-	CountRequests(kind metrics.RequestKind)
+	CountRequests(kind domain.RequestKind)
 }
 
 type MetricsPrinter interface {

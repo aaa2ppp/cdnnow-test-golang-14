@@ -4,11 +4,11 @@ import (
 	"log"
 	"time"
 
-	"aaa2ppp/cdnnow-test-golang-14/internal/calculators"
+	"aaa2ppp/cdnnow-test-golang-14/internal/domain"
 )
 
 type valuer interface {
-	Values() calculators.Values
+	Values() domain.Values
 }
 
 func startPeriodicPrinter(calc valuer, interval time.Duration) func() {

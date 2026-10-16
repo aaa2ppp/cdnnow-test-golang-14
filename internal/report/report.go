@@ -1,4 +1,4 @@
-package metrics
+package report
 
 import (
 	"bytes"
@@ -6,12 +6,14 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"aaa2ppp/cdnnow-test-golang-14/internal/domain"
 )
 
 const reportCacheTTL = 500 * time.Millisecond
 
 type snapshotGetter interface {
-	getSnapshot(fn func(*snapshot))
+	GetSnapshot(fn func(*domain.Snapshot))
 }
 
 type Printer struct {
@@ -38,7 +40,7 @@ func (r *Printer) getReportText() []byte {
 	defer r.mu.Unlock()
 
 	if !time.Now().Before(r.cacheDeadline) {
-		r.stats.getSnapshot(func(snap *snapshot) {
+		r.stats.GetSnapshot(func(snap *domain.Snapshot) {
 			if r.cacheVersion == snap.Version {
 				return
 			}
@@ -54,26 +56,26 @@ func (r *Printer) getReportText() []byte {
 }
 
 var requestMeta = []struct {
-	kind RequestKind
+	kind domain.RequestKind
 	name string
 	help string
 }{
-	{Ok, "calc_ok_1s", "Successfully handled requests per second"},
-	{BadRequest, "calc_bad_request_1s", "Requests rejected due to bad client data per second"},
-	{Overload, "calc_overload_1s", "Requests rejected due to overload per second"},
-	{Failed, "calc_failed_1s", "Requests failed during execution per second"},
+	{domain.Ok, "calc_ok_1s", "Successfully handled requests per second"},
+	{domain.BadRequest, "calc_bad_request_1s", "Requests rejected due to bad client data per second"},
+	{domain.Overload, "calc_overload_1s", "Requests rejected due to overload per second"},
+	{domain.Failed, "calc_failed_1s", "Requests failed during execution per second"},
 }
 
 var histogramMeta = []struct {
-	kind DurationKind
+	kind domain.DurationKind
 	name string
 	help string
 }{
-	{Add, "calc_c_duration_ns", "C `add` function call duration, nanoseconds"},
-	{Sub, "calc_rust_duration_ns", "Rust `sub` function call duration, nanoseconds"},
+	{domain.Add, "calc_c_duration_ns", "C `add` function call duration, nanoseconds"},
+	{domain.Sub, "calc_rust_duration_ns", "Rust `sub` function call duration, nanoseconds"},
 }
 
-func printReport(b io.Writer, snap *snapshot) error {
+func printReport(b io.Writer, snap *domain.Snapshot) error {
 	var err error
 	printf := func(f string, a ...any) {
 		if err != nil {

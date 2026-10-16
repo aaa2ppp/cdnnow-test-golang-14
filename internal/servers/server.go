@@ -9,15 +9,15 @@ import (
 	"runtime"
 	"time"
 
+	"aaa2ppp/cdnnow-test-golang-14/internal/api"
 	"aaa2ppp/cdnnow-test-golang-14/internal/calculators"
+	"aaa2ppp/cdnnow-test-golang-14/internal/domain"
 	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
-	"aaa2ppp/cdnnow-test-golang-14/internal/pools"
+	"aaa2ppp/cdnnow-test-golang-14/internal/pipeline"
+	report "aaa2ppp/cdnnow-test-golang-14/internal/report"
 
 	"golang.org/x/net/netutil"
 )
-
-const aggregatorQueueSize = 100
-const samplesBatchSize = 256
 
 //go:generate enumer -type ServerType -linecomment -text
 type ServerType uint8
@@ -46,23 +46,64 @@ type Config struct {
 	QueueSize  int
 	PprofAddr  string
 	MaxConns   int
+	Workers    int
 }
 
-type service struct {
-	asyncCalc  bool
-	calculator calculators.Calculator
-	counter    *metrics.Aggregator
-	printer    *metrics.Printer
+type service interface {
+	Calculate(num int64) error
+	CountRequests(kind domain.RequestKind)
+	PrintMetrics(w io.Writer) error
+	Values() domain.Values
+	Stop()
 }
 
-func (s *service) Calculate(num int64) error              { return s.calculator.Calculate(num) }
-func (s *service) CountRequests(kind metrics.RequestKind) { s.counter.CountRequests(kind, 1) }
-func (s *service) PrintMetrics(w io.Writer) error         { return s.printer.Print(w) }
+type syncService struct {
+	aggr    *metrics.Aggregator
+	calc    *calculators.Sync
+	printer *report.Printer
+}
+
+func (s *syncService) Calculate(num int64) error             { return s.calc.Calculate(num) }
+func (s *syncService) CountRequests(kind domain.RequestKind) { s.aggr.CountRequests(kind, 1) }
+func (s *syncService) PrintMetrics(w io.Writer) error        { return s.printer.Print(w) }
+func (s *syncService) Values() domain.Values                 { return s.calc.Values() }
+func (s *syncService) Stop()                                 {}
+
+type asyncService struct {
+	pipeline *pipeline.Pipeline
+	printer  *report.Printer
+}
+
+func (s *asyncService) Calculate(num int64) error             { return s.pipeline.Calculate(num) }
+func (s *asyncService) CountRequests(kind domain.RequestKind) { s.pipeline.CountRequests(kind, 1) }
+func (s *asyncService) PrintMetrics(w io.Writer) error        { return s.printer.Print(w) }
+func (s *asyncService) Values() domain.Values                 { return s.pipeline.Values() }
+func (s *asyncService) Stop()                                 { s.pipeline.Close() }
+
+func newService(cfg Config) service {
+	if cfg.CalcMode == Sync {
+		smplCh := make(chan domain.Sample, 50)
+		aggr := metrics.NewAggregator(nil, smplCh, nil)
+		calc := calculators.NewSync(func(smpl domain.Sample) { smplCh <- smpl })
+		printer := report.NewPrinter(aggr)
+
+		return &syncService{
+			aggr:    aggr,
+			calc:    calc,
+			printer: printer,
+		}
+	}
+
+	pipeline := pipeline.NewPipeline(cfg.QueueSize, cfg.Workers)
+	printer := report.NewPrinter(pipeline)
+
+	return &asyncService{
+		pipeline: pipeline,
+		printer:  printer,
+	}
+}
 
 func Run(ctx context.Context, cfg Config) error {
-	var aggregator *metrics.Aggregator
-	var calculator calculators.Calculator
-
 	slog.Info("runtime", "NumCPU", runtime.NumCPU(), "GOMAXPROCS", runtime.GOMAXPROCS(0))
 
 	listener, err := net.Listen("tcp", cfg.Addr)
@@ -81,46 +122,19 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer stopPprof()
 
-	var asyncCalc bool
-	switch cfg.CalcMode {
-	case Sync:
-		asyncCalc = false
-		aggregator = metrics.NewAggregator(aggregatorQueueSize, nil, nil)
-		calculator = calculators.NewSync(aggregator.RecordSample)
+	svc := newService(cfg)
 
-	case Async:
-		asyncCalc = true
-		pool := pools.NewBatchPool[metrics.Sample](samplesBatchSize)
-		aggregator = metrics.NewAggregator(aggregatorQueueSize, pool, nil)
-		calculator = calculators.NewAsync(cfg.QueueSize, aggregator.RecordSamples, pool)
-
-	case Parallel:
-		asyncCalc = true
-		pool := pools.NewBatchPool[time.Duration](samplesBatchSize)
-		aggregator = metrics.NewAggregator(aggregatorQueueSize, nil, pool)
-		calculator = calculators.NewParallel(cfg.QueueSize, aggregator.RecordDurations, pool)
-
-	default:
-		return fmt.Errorf("servers.Run: unknown calculation mode: %v", cfg.CalcMode)
-	}
-
-	defer aggregator.Stop()
-
-	stopPrinter := startPeriodicPrinter(calculator, cfg.Interval)
+	stopPrinter := startPeriodicPrinter(svc, cfg.Interval)
 	defer stopPrinter()
 
-	if calculator, ok := calculator.(interface{ Stop() }); ok {
-		defer func() {
-			slog.Info("stop calculator")
-			calculator.Stop()
-		}()
-	}
+	defer func() {
+		slog.Info("stop calculator")
+		svc.Stop()
+	}()
 
-	svc := &service{
-		asyncCalc:  asyncCalc,
-		calculator: calculator,
-		counter:    aggregator,
-		printer:    metrics.NewPrinter(aggregator),
+	apiCfg := api.Config{
+		AsyncCalc: cfg.CalcMode != Sync,
+		Service:   svc,
 	}
 
 	queueSize := cfg.QueueSize
@@ -131,9 +145,11 @@ func Run(ctx context.Context, cfg Config) error {
 
 	switch cfg.ServerType {
 	case ServerStd:
-		return runStdHTTPServer(ctx, listener, svc)
+		handler := api.NewStd(apiCfg)
+		return runStdHTTPServer(ctx, listener, handler)
 	case ServerFast:
-		return runFastHTTPServer(ctx, listener, svc)
+		handler := api.NewFast(apiCfg)
+		return runFastHTTPServer(ctx, listener, handler)
 	}
 	return fmt.Errorf("servers.Run: unknown server type: %v", cfg.ServerType)
 }

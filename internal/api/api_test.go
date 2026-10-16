@@ -7,14 +7,16 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"aaa2ppp/cdnnow-test-golang-14/internal/calculators"
-	"aaa2ppp/cdnnow-test-golang-14/internal/metrics"
+	"aaa2ppp/cdnnow-test-golang-14/internal/domain"
 	"aaa2ppp/cdnnow-test-golang-14/internal/operators"
+	"aaa2ppp/cdnnow-test-golang-14/internal/pipeline"
 
 	"github.com/aaa2ppp/be"
 	"github.com/valyala/fasthttp"
@@ -32,7 +34,7 @@ func init() {
 	}
 }
 
-type metricMap map[metrics.RequestKind]int
+type metricMap map[domain.RequestKind]int
 
 type mockService struct {
 	metrics           metricMap
@@ -58,7 +60,7 @@ func (s *mockService) PrintMetrics(w io.Writer) error {
 	return nil
 }
 
-func (s *mockService) CountRequests(kind metrics.RequestKind) {
+func (s *mockService) CountRequests(kind domain.RequestKind) {
 	if s.metrics == nil {
 		s.metrics = metricMap{}
 	}
@@ -85,7 +87,7 @@ func TestAPI(t *testing.T) {
 			name:               "success",
 			request:            "POST /calc?num=42",
 			wantStatus:         200,
-			wantMetrics:        metricMap{metrics.Ok: 1},
+			wantMetrics:        metricMap{domain.Ok: 1},
 			wantCalculateCalls: 1,
 		},
 		{
@@ -93,7 +95,7 @@ func TestAPI(t *testing.T) {
 			request:            "POST /calc?num=42",
 			asyncCalc:          true,
 			wantStatus:         202,
-			wantMetrics:        metricMap{metrics.Ok: 1},
+			wantMetrics:        metricMap{domain.Ok: 1},
 			wantCalculateCalls: 1,
 		},
 		{
@@ -109,13 +111,13 @@ func TestAPI(t *testing.T) {
 		{
 			name:        "missing num",
 			request:     "POST /calc",
-			wantMetrics: metricMap{metrics.BadRequest: 1},
+			wantMetrics: metricMap{domain.BadRequest: 1},
 			wantStatus:  400,
 		},
 		{
 			name:        "bad num",
 			request:     "POST /calc?num=abc",
-			wantMetrics: metricMap{metrics.BadRequest: 1},
+			wantMetrics: metricMap{domain.BadRequest: 1},
 			wantStatus:  400,
 		},
 		{
@@ -123,11 +125,11 @@ func TestAPI(t *testing.T) {
 			request: "POST /calc?num=42",
 			newService: func() *mockService {
 				return &mockService{
-					calculateFunc: func(int64) error { return calculators.ErrOverloaded },
+					calculateFunc: func(int64) error { return domain.ErrOverload },
 				}
 			},
 			wantCalculateCalls: 1,
-			wantMetrics:        metricMap{metrics.Overload: 1},
+			wantMetrics:        metricMap{domain.Overload: 1},
 			wantStatus:         503,
 		},
 		{
@@ -139,7 +141,7 @@ func TestAPI(t *testing.T) {
 				}
 			},
 			wantCalculateCalls: 1,
-			wantMetrics:        metricMap{metrics.Failed: 1},
+			wantMetrics:        metricMap{domain.Failed: 1},
 			wantStatus:         500,
 		},
 		{
@@ -219,7 +221,7 @@ func (c *mockCalcService) Calculate(num int64) error {
 	return nil
 }
 
-func (c *mockCalcService) CountRequests(metrics.RequestKind) {}
+func (c *mockCalcService) CountRequests(domain.RequestKind) {}
 
 func (c *mockCalcService) Stop() {
 	if calc, ok := c.Calculator.(interface{ Stop() }); ok {
@@ -254,7 +256,7 @@ func calcCases() []calcCase {
 		{
 			"async calc",
 			func() *mockCalcService {
-				c := calculators.NewAsync(1024, nil, nil)
+				c := pipeline.NewPipeline(1024, 1)
 				c.IgnoreOverload()
 				return &mockCalcService{
 					Calculator: c,
@@ -265,7 +267,7 @@ func calcCases() []calcCase {
 		{
 			"parallel calc",
 			func() *mockCalcService {
-				c := calculators.NewParallel(1024, nil, nil)
+				c := pipeline.NewPipeline(1024, runtime.GOMAXPROCS(0))
 				c.IgnoreOverload()
 				return &mockCalcService{
 					Calculator: c,

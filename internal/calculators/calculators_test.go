@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"aaa2ppp/cdnnow-test-golang-14/internal/domain"
 	"aaa2ppp/cdnnow-test-golang-14/internal/operators"
 
 	"github.com/aaa2ppp/be"
@@ -19,6 +20,11 @@ func init() {
 	}
 }
 
+type Calculator interface {
+	Calculate(num int64) error
+	Values() domain.Values
+}
+
 func TestCalculators(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -30,34 +36,34 @@ func TestCalculators(t *testing.T) {
 				return NewSync(nil)
 			},
 		},
-		{
-			"Async",
-			func() Calculator {
-				c := NewAsync(0, nil, nil)
-				return c
-			},
-		},
-		{
-			"Async q10",
-			func() Calculator {
-				c := NewAsync(10, nil, nil)
-				return c
-			},
-		},
-		{
-			"Parallel",
-			func() Calculator {
-				c := NewParallel(0, nil, nil)
-				return c
-			},
-		},
-		{
-			"Parallel q10",
-			func() Calculator {
-				c := NewParallel(10, nil, nil)
-				return c
-			},
-		},
+		// {
+		// 	"Async",
+		// 	func() Calculator {
+		// 		c := NewAsync(0, nil, nil)
+		// 		return c
+		// 	},
+		// },
+		// {
+		// 	"Async q10",
+		// 	func() Calculator {
+		// 		c := NewAsync(10, nil, nil)
+		// 		return c
+		// 	},
+		// },
+		// {
+		// 	"Parallel",
+		// 	func() Calculator {
+		// 		c := NewParallel(0, nil, nil)
+		// 		return c
+		// 	},
+		// },
+		// {
+		// 	"Parallel q10",
+		// 	func() Calculator {
+		// 		c := NewParallel(10, nil, nil)
+		// 		return c
+		// 	},
+		// },
 	}
 
 	type stopper interface{ Stop() }
@@ -87,49 +93,49 @@ func BenchmarkSync(b *testing.B) {
 	}
 }
 
-func BenchmarkAsync(b *testing.B) {
-	c := NewAsync(1024, nil, nil)
-	c.ignoreOverload = true
-	for i := 0; i < b.N; i++ {
-		_ = c.Calculate(42)
-	}
-	c.Stop()
-}
+// func BenchmarkAsync(b *testing.B) {
+// 	c := NewAsync(1024, nil, nil)
+// 	c.ignoreOverload = true
+// 	for i := 0; i < b.N; i++ {
+// 		_ = c.Calculate(42)
+// 	}
+// 	c.Stop()
+// }
 
-func BenchmarkAsyncSingle(b *testing.B) {
-	cases := []struct {
-		name string
-		op   operators.Op
-	}{
-		{
-			"Add C lib",
-			operators.AddOp(),
-		},
-		{
-			"Sub Rust lib",
-			operators.SubOp(),
-		},
-	}
+// func BenchmarkAsyncSingle(b *testing.B) {
+// 	cases := []struct {
+// 		name string
+// 		op   operators.Op
+// 	}{
+// 		{
+// 			"Add C lib",
+// 			operators.AddOp(),
+// 		},
+// 		{
+// 			"Sub Rust lib",
+// 			operators.SubOp(),
+// 		},
+// 	}
 
-	for _, cs := range cases {
-		b.Run(cs.name, func(b *testing.B) {
-			c := newAsyncSingle(cs.op, 1024, nil, nil)
-			c.ignoreOverload = true
-			for i := 0; i < b.N; i++ {
-				_ = c.Calculate(42)
-			}
-			c.Stop()
-		})
-	}
-}
+// 	for _, cs := range cases {
+// 		b.Run(cs.name, func(b *testing.B) {
+// 			c := newAsyncSingle(cs.op, 1024, nil, nil)
+// 			c.ignoreOverload = true
+// 			for i := 0; i < b.N; i++ {
+// 				_ = c.Calculate(42)
+// 			}
+// 			c.Stop()
+// 		})
+// 	}
+// }
 
-func BenchmarkParallel(b *testing.B) {
-	c := NewParallel(1024, nil, nil)
-	c.sum.ignoreOverload = true
-	c.sub.ignoreOverload = true
+// func BenchmarkParallel(b *testing.B) {
+// 	c := NewParallel(1024, nil, nil)
+// 	c.sum.ignoreOverload = true
+// 	c.sub.ignoreOverload = true
 
-	for i := 0; i < b.N; i++ {
-		_ = c.Calculate(42)
-	}
-	c.Stop()
-}
+// 	for i := 0; i < b.N; i++ {
+// 		_ = c.Calculate(42)
+// 	}
+// 	c.Stop()
+// }

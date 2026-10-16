@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -44,6 +45,7 @@ func main() {
 		queueSize   int
 		pprofAddr   string
 		maxConns    int
+		workers     int
 	)
 	flag.StringVar(&host, "host", "0.0.0.0", "bind server to address")
 	flag.StringVar(&port, "port", "8080", "server port")
@@ -55,6 +57,7 @@ func main() {
 	flag.IntVar(&queueSize, "queue-size", defaultQueueSize, "maximum task queue capacity. Returns 503 if the queue overflows. Only applies to async or parallel modes.")
 	flag.StringVar(&pprofAddr, "pprof-addr", "localhost:6060", "pprof listen address (host:port, empty to disable)")
 	flag.IntVar(&maxConns, "max-conns", 0, "maximum number of connections (0 - without restrictions)")
+	flag.IntVar(&workers, "n", 0, "number of calculator workers for async mode (0 - sets it to GOMAXPOCS)")
 	flag.Parse()
 
 	interval := time.Duration(intervalSec * float64(time.Second))
@@ -68,6 +71,13 @@ func main() {
 
 	if maxConns < 0 {
 		usage("max-conns cannot be negative")
+	}
+
+	if workers < 0 {
+		usage("n cannot be negative")
+	}
+	if workers == 0 {
+		workers = runtime.GOMAXPROCS(0)
 	}
 
 	if err := operators.LoadLibraries(cLibPath, rustLibPath); err != nil {
@@ -85,6 +95,7 @@ func main() {
 		QueueSize:  queueSize,
 		PprofAddr:  pprofAddr,
 		MaxConns:   maxConns,
+		Workers:    workers,
 	})
 	if err != nil {
 		slog.Error("abnormal shutdown", "error", err)

@@ -6,18 +6,11 @@ import (
 	"net"
 	"net/http"
 	"time"
-
-	"aaa2ppp/cdnnow-test-golang-14/internal/api"
 )
 
-func runStdHTTPServer(ctx context.Context, listener net.Listener, svc *service) error {
-	router := api.NewStd(api.Config{
-		Service:   svc,
-		AsyncCalc: svc.asyncCalc,
-	})
-
+func runStdHTTPServer(ctx context.Context, listener net.Listener, handler http.Handler) error {
 	server := http.Server{
-		Handler:      router,
+		Handler:      handler,
 		ReadTimeout:  2 * time.Second,
 		WriteTimeout: 2 * time.Second,
 		IdleTimeout:  30 * time.Second,

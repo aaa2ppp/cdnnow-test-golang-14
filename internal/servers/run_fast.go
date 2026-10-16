@@ -7,16 +7,9 @@ import (
 	"time"
 
 	"github.com/valyala/fasthttp"
-
-	"aaa2ppp/cdnnow-test-golang-14/internal/api"
 )
 
-func runFastHTTPServer(ctx context.Context, listener net.Listener, svc *service) error {
-	handler := api.NewFast(api.Config{
-		Service:   svc,
-		AsyncCalc: svc.asyncCalc,
-	})
-
+func runFastHTTPServer(ctx context.Context, listener net.Listener, handler fasthttp.RequestHandler) error {
 	server := &fasthttp.Server{
 		Handler:               handler,
 		ReadTimeout:           2 * time.Second,

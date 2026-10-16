@@ -15,6 +15,7 @@ services:
       - "-max-conns=${MAX_CONNS:-0}"
       - "-queue-size=${QUEUE_SIZE:-1024}"
       - "-pprof-addr=0.0.0.0:6060"
+      - "-n=${WORKERS:-0}"
     ports:
       - "${SERVER_PORT:-8080}:8080"
       - "${PPROF_PORT:-6060}:6060"
